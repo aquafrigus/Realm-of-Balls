@@ -3,6 +3,8 @@
 export enum CharacterType {
   PYRO = 'PYRO',
   TANK = 'TANK',
+  WUKONG = 'WUKONG',
+  CAT = 'CAT',
 }
 
 export enum TankMode {
@@ -22,6 +24,19 @@ export interface GameEntity {
   radius: number;
   mass: number;
   color: string;
+}
+
+export interface Drone extends GameEntity {
+  ownerId: string;
+  hp: number;
+  maxHp: number;
+  life: number; // Battery
+  maxLife: number;
+  state: 'PATROL' | 'ATTACK' | 'RETURN';
+  attackCooldown: number;
+  patrolAngle: number;
+  isSummon: boolean; // Attribute for targeting priority
+  isDocked?: boolean; // Flag for removal logic
 }
 
 export interface PlayerState extends GameEntity {
@@ -48,6 +63,40 @@ export interface PlayerState extends GameEntity {
   isReloadingLmg: boolean;   // New: Track manual reload phase
   lmgReloadTimer: number;    // Timer for the reload duration
 
+  // Tank Drone
+  droneState: 'READY' | 'DEPLOYED' | 'CHARGING' | 'RECONSTRUCTING';
+  activeDroneId?: string;
+  droneTimer: number; // For charging/reconstructing
+  droneMaxTimer: number;
+
+  // Wukong Resources
+  wukongComboStep: number; // 0, 1, 2
+  wukongComboTimer: number; // Window to hit next combo
+  wukongChargeState: 'NONE' | 'THRUST' | 'SMASH'; // Right click or Space
+  wukongChargeTime: number; 
+  wukongMaxCharge: number;
+  wukongChargeHoldTimer: number; // Track how long max charge is held
+  wukongVaultTimer: number; // Animation timer for vaulting
+  wukongThrustTimer: number; // Cooldown for Thrust skill
+  isVaulting: boolean; // Flag for vaulting animation state
+  
+  // Wukong Visuals
+  wukongLastAttackTime: number; // For rendering attack animations
+  wukongLastAttackType: 'COMBO_1' | 'COMBO_2' | 'COMBO_SMASH' | 'SKILL_SMASH' | 'THRUST' | 'NONE';
+  wukongLastChargePct: number; // Store charge % at moment of release for rendering correct length
+
+  // Cat Resources
+  lives?: number; // 9 Lives mechanism
+  maxLives?: number;
+  invincibleTimer?: number; // Invulnerability after respawn
+  catChargeStartTime?: number; // For Pounce charging
+  catIsCharging?: boolean; // Is holding LMB
+  idleTimer?: number; // Track idle time for zZz animation
+  pounceCooldown: number; // [新增] 飞扑内置CD
+  isPouncing: boolean;    // [新增] 是否处于飞扑（滞空）状态
+  pounceTimer: number;
+  hasPounceHit: boolean;  // [新增] 本次飞扑是否已经触发过攻击（防止对同一敌人多次触发）
+  
   angle: number; // Body rotation
   aimAngle: number; // Turret/Aim rotation
   
@@ -57,16 +106,26 @@ export interface PlayerState extends GameEntity {
 
   // Pyro specific
   isFiringFlamethrower: boolean;
+  currentWeaponRange?: number; // 当前根据鼠标距离计算出的射程
+  currentWeaponAngle?: number; // 当前根据射程换算出的扩散角度 (弧度)
   
   // Cooldowns
   skillCooldown: number;
   skillMaxCooldown: number;
+  secondarySkillCooldown: number; // Right click skill (Pyro Detonate)
+  secondarySkillMaxCooldown: number;
   attackCooldown: number;
 
   // Status Effects
   slowTimer: number; // Duration of slow effect
   burnTimer: number; // Duration of burn effect
   flameExposure: number; // 0-100, determines damage ramping
+  isWet: boolean; // Is currently in water
+  disarmTimer: number;   // 缴械：无法普攻
+  silenceTimer: number;  // 沉默：无法技能
+  fearTimer: number;     // 恐惧：反向逃跑 + 无法操控
+  paralysisTimer: number;
+  bufferedInput: 'NONE' | 'HISS';
 
   // AI specific
   lastPos?: Vector2;
@@ -81,11 +140,12 @@ export interface Projectile extends GameEntity {
   ownerId: string;
   maxLife: number;
   life: number;
-  projectileType: 'BULLET' | 'BOMB' | 'MAGMA_PROJ'; 
+  projectileType: 'BULLET' | 'BOMB' | 'MAGMA_PROJ' | 'DRONE_SHOT'; 
   targetPos?: Vector2; // For lobbed shots
   isAoe?: boolean;
   aoeRadius?: number;
   hitTargets?: string[]; // IDs of entities already hit (for penetration)
+  isEmp?: boolean; // New attribute: EMP attack
 }
 
 export interface GroundEffect {
@@ -94,8 +154,12 @@ export interface GroundEffect {
   radius: number;
   life: number;
   maxLife: number;
-  type: 'MAGMA_POOL';
+  type: 'MAGMA_POOL' | 'WUKONG_SMASH' | 'CRACK' | 'SCOOPER_SMASH' | 'SCOOPER_WARNING';
   ownerId: string;
+  width?: number;
+  length?: number;
+  rotation?: number;
+  targetId?: string;
 }
 
 export interface Particle {
@@ -125,6 +189,7 @@ export interface GameState {
   groundEffects: GroundEffect[]; 
   particles: Particle[];
   obstacles: Obstacle[];
+  drones: Drone[]; // Added Drones array
   floatingTexts: FloatingText[]; // Added for status text
   camera: Vector2;
   gameStatus: 'PLAYING' | 'VICTORY' | 'DEFEAT';

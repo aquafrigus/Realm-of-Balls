@@ -10,6 +10,15 @@ export const normalize = (v: Vector2): Vector2 => {
 };
 export const dist = (v1: Vector2, v2: Vector2): number => Math.sqrt(Math.pow(v2.x - v1.x, 2) + Math.pow(v2.y - v1.y, 2));
 
+export const distToSegment = (p: Vector2, v: Vector2, w: Vector2): number => {
+  const l2 = dist(v, w) * dist(v, w);
+  if (l2 === 0) return dist(p, v);
+  let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  const projection = { x: v.x + t * (w.x - v.x), y: v.y + t * (w.y - v.y) };
+  return dist(p, projection);
+};
+
 export const clamp = (val: number, min: number, max: number) => Math.min(Math.max(val, min), max);
 
 export const checkCircleRectCollision = (circlePos: Vector2, radius: number, rect: {x: number, y: number, width: number, height: number}) => {

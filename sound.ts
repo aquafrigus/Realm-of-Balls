@@ -1,4 +1,5 @@
 
+
 class SoundManager {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
@@ -49,7 +50,7 @@ class SoundManager {
      osc.stop(t + duration);
   }
 
-  private createNoise(duration: number, vol = 1, filterFreq?: number) {
+  private createNoise(duration: number, vol = 1, filterFreq?: number, filterType: BiquadFilterType = 'lowpass') {
      if (!this.ctx || !this.masterGain) return;
      const t = this.ctx.currentTime;
      
@@ -65,11 +66,11 @@ class SoundManager {
      
      const gain = this.ctx.createGain();
      gain.gain.setValueAtTime(vol, t);
-     gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+     gain.gain.linearRampToValueAtTime(0, t + duration);
      
      if (filterFreq) {
          const filter = this.ctx.createBiquadFilter();
-         filter.type = 'lowpass';
+         filter.type = filterType;
          filter.frequency.value = filterFreq;
          noise.connect(filter);
          filter.connect(gain);
@@ -81,28 +82,33 @@ class SoundManager {
      noise.start();
   }
 
-  playShot(type: 'PYRO' | 'ARTILLERY' | 'LMG') {
+  playShot(type: 'PYRO' | 'ARTILLERY' | 'LMG' | 'SWING' | 'SCRATCH') {
     this.init();
     if (!this.ctx) return;
 
     if (type === 'PYRO') {
-        // Hissing noise, short overlap
-        this.createNoise(0.15, 0.15, 800);
+        this.createNoise(0.4, 0.015, 1000, 'highpass');
+        this.createOsc('sine', 400, 0.1, 0.05, 300);
     } else if (type === 'ARTILLERY') {
-        // Deep boom + impact
-        this.createOsc('square', 100, 0.4, 0.5, 10); // Thump
-        this.createNoise(0.5, 0.5, 600); // Blast
+        this.createOsc('square', 100, 0.4, 0.5, 10); 
+        this.createNoise(0.5, 0.5, 600); 
     } else if (type === 'LMG') {
-        // Sharp pop
         this.createOsc('sawtooth', 300, 0.08, 0.1, 100);
         this.createNoise(0.05, 0.1, 2000);
+    } else if (type === 'SWING') {
+        // Whoosh sound for Wukong
+        this.createNoise(0.1, 0.2, 1000);
+        this.createOsc('sine', 300, 0.1, 0.2, 100);
+    } else if (type === 'SCRATCH') {
+        // Short scratch sound: Highpass noise + fast pitch drop
+        this.createNoise(0.08, 0.3, 1500);
+        this.createOsc('sawtooth', 600, 0.08, 0.15, 200);
     }
   }
 
   playExplosion() {
       this.init();
       if (!this.ctx) return;
-      // Heavy rumble
       this.createOsc('sawtooth', 60, 0.6, 0.6, 10);
       this.createNoise(0.8, 0.6, 400);
   }
@@ -110,31 +116,36 @@ class SoundManager {
   playHit() {
       this.init();
       if (!this.ctx) return;
-      // High pitch tick
       this.createOsc('triangle', 600, 0.05, 0.1);
   }
   
-  playSkill(type: 'MAGMA' | 'SWITCH' | 'RELOAD') {
+  playSkill(type: 'MAGMA' | 'SWITCH' | 'RELOAD' | 'CHARGE_START' | 'SMASH_HIT' | 'THRUST') {
       this.init();
       if (!this.ctx) return;
       if (type === 'MAGMA') {
-          // Swoosh
-          this.createNoise(0.4, 0.3, 1200);
+          this.createNoise(0.4, 0.4, 1200);
           this.createOsc('sine', 200, 0.4, 0.2, 50);
       } else if (type === 'SWITCH') {
-          // Mechanical Clank
           this.createOsc('square', 500, 0.1, 0.15);
           this.createOsc('sawtooth', 200, 0.15, 0.15);
       } else if (type === 'RELOAD') {
-          // Click
           this.createOsc('sine', 800, 0.1, 0.1);
+      } else if (type === 'CHARGE_START') {
+          // Rising pitch
+          this.createOsc('triangle', 200, 1.0, 0.1, 600);
+      } else if (type === 'SMASH_HIT') {
+          // Heavy impact
+          this.createOsc('square', 80, 0.3, 0.5, 10);
+          this.createNoise(0.3, 0.5, 500);
+      } else if (type === 'THRUST') {
+          // Sharp pierce
+          this.createOsc('sawtooth', 400, 0.2, 0.2, 100);
       }
   }
 
   playOverheat() {
       this.init();
       if (!this.ctx) return;
-      // Warning beep
       this.createOsc('square', 800, 0.2, 0.1, 400);
   }
   
@@ -147,7 +158,6 @@ class SoundManager {
      } else if (type === 'START') {
          this.createOsc('triangle', 400, 0.3, 0.2, 800);
      } else if (type === 'VICTORY') {
-         // Major Arpeggio
          const t = this.ctx.currentTime;
          [440, 554, 659, 880].forEach((freq, i) => {
              const osc = this.ctx!.createOscillator();
@@ -161,7 +171,6 @@ class SoundManager {
              osc.stop(t + i*0.1 + 0.5);
          });
      } else if (type === 'DEFEAT') {
-         // Minor descend
          const t = this.ctx.currentTime;
          [440, 415, 370, 311].forEach((freq, i) => {
              const osc = this.ctx!.createOscillator();
