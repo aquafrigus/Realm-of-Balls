@@ -12,6 +12,17 @@ export const PHYSICS = {
 };
 
 export const CHAR_STATS = {
+  [CharacterType.COACH]: {
+    hp: 50000, // 极高血量
+    mass: 2000, // 非常重，不容易被击飞，方便测试连招
+    radius: 45, // 稍大一点，容易命中
+    speed: 1.0, // 极慢的移动速度
+    
+    color: '#e2e8f0', // 灰白色
+    
+    skillCooldown: 99999, 
+    secondarySkillCooldown: 99999,
+  },
   [CharacterType.PYRO]: {
     hp: 1200, // Buffed from 1000
     mass: 150, 

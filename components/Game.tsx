@@ -11,6 +11,7 @@ import { CHARACTER_IMAGES } from '../images';
 
 interface GameProps {
   playerType: CharacterType;
+  enemyType?: CharacterType | 'RANDOM';
   onExit: () => void;
 }
 
@@ -42,7 +43,7 @@ interface UIState {
     gameStatus: string;
 }
 
-const Game: React.FC<GameProps> = ({ playerType, onExit }) => {
+const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
   
@@ -173,10 +174,14 @@ const Game: React.FC<GameProps> = ({ playerType, onExit }) => {
   const spawnPlayer = getRandomEdgePos();
   // Ensure enemy spawns reasonably far away
   let spawnEnemy = getRandomEdgePos();
-  let attempts = 0;
-  while(Utils.dist(spawnPlayer, spawnEnemy) < 800 && attempts < 10) {
-      spawnEnemy = getRandomEdgePos();
-      attempts++;
+  if (enemyType === CharacterType.COACH) {
+      spawnEnemy = { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 }; // 强制中心
+  } else {
+      let attempts = 0;
+      while(Utils.dist(spawnPlayer, spawnEnemy) < 800 && attempts < 10) {
+          spawnEnemy = getRandomEdgePos();
+          attempts++;
+      }
   }
 
   // Game State Ref
@@ -184,6 +189,9 @@ const Game: React.FC<GameProps> = ({ playerType, onExit }) => {
     player: createPlayer(playerType, spawnPlayer, 'player'),
     enemy: createPlayer(
       (() => {
+        if (enemyType && enemyType !== 'RANDOM') {
+            return enemyType;
+        }
         // PURE RANDOM SELECTION (INCLUDING MIRROR MATCHES)
         const types = [CharacterType.PYRO, CharacterType.TANK, CharacterType.WUKONG, CharacterType.CAT];
         return types[Math.floor(Math.random() * types.length)];
@@ -1252,6 +1260,38 @@ const Game: React.FC<GameProps> = ({ playerType, onExit }) => {
     // Death Checks
     const checkDeath = (entity: PlayerState) => {
        if (entity.hp <= 0 && !entity.isDead) {
+          // 教练球特殊复活机制
+          if (entity.type === CharacterType.COACH) {
+              // 1. 播放爆炸特效
+              createExplosion(state, entity.pos, 80, 0, 'system', true);
+              Sound.playUI('START'); // 播放一个重置音效
+
+              // 2. 浮动文字提示
+              state.floatingTexts.push({
+                   id: Math.random().toString(),
+                   pos: {x: entity.pos.x, y: entity.pos.y - 50},
+                   text: "复活!",
+                   color: '#ffffff',
+                   life: 2.0, maxLife: 2.0, velY: -2
+              });
+
+              // 3. 瞬间满血并传送回中心
+              entity.hp = entity.maxHp;
+              entity.pos = { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 };
+              entity.vel = { x: 0, y: 0 };
+              
+              // 4. 清除身上的负面状态
+              entity.burnTimer = 0;
+              entity.slowTimer = 0;
+              entity.flameExposure = 0;
+              entity.disarmTimer = 0;
+              entity.silenceTimer = 0;
+              entity.fearTimer = 0;
+              entity.paralysisTimer = 0;
+
+              return;
+          }
+
           // CAT NINE LIVES MECHANIC
           if (entity.type === CharacterType.CAT && (entity.lives || 0) > 1) {
               entity.lives = (entity.lives || 1) - 1;
@@ -1782,6 +1822,29 @@ const Game: React.FC<GameProps> = ({ playerType, onExit }) => {
         ai.vel = Utils.add(ai.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * fearSpeed * dt * 60));
         ai.angle = Math.atan2(runDir.y, runDir.x);
         return; 
+    }
+
+    // 教练球 AI
+    if (ai.type === CharacterType.COACH) {
+        if (Math.random() < 0.02) { // 约每秒一次改变方向
+            const randAngle = Math.random() * Math.PI * 2;
+            ai.aimAngle = randAngle;
+            ai.angle = randAngle;
+        }
+
+        const moveDir = { x: Math.cos(ai.angle), y: Math.sin(ai.angle) };
+        const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[CharacterType.COACH].speed;
+        
+        const distToCenter = Utils.dist(ai.pos, {x: MAP_SIZE.width/2, y: MAP_SIZE.height/2});
+        if (distToCenter > 500) {
+             const toCenter = Utils.normalize(Utils.sub({x: MAP_SIZE.width/2, y: MAP_SIZE.height/2}, ai.pos));
+             ai.vel = Utils.add(ai.vel, Utils.mult(toCenter, accel * dt * 60));
+             ai.angle = Math.atan2(toCenter.y, toCenter.x);
+        } else {
+             ai.vel = Utils.add(ai.vel, Utils.mult(moveDir, accel * dt * 60));
+        }
+        
+        return;
     }
 
     if (ai.type === CharacterType.CAT) {
@@ -3984,7 +4047,16 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
     };
   }, []);
 
-  const getRoleName = (type: CharacterType) => type === CharacterType.PYRO ? '火焰球' : (type === CharacterType.WUKONG ? '悟空球' : (type === CharacterType.CAT ? '猫猫球' : '坦克球'));
+  const getRoleName = (type: CharacterType) => {
+    const names: Record<CharacterType, string> = {
+      [CharacterType.PYRO]: '火焰球',
+      [CharacterType.WUKONG]: '悟空球',
+      [CharacterType.CAT]: '猫猫球',
+      [CharacterType.TANK]: '坦克球',
+      [CharacterType.COACH]: '教练球',
+    };
+    return names[type] || '未知球体';
+  };
   const getModeName = (mode: TankMode) => mode === TankMode.ARTILLERY ? '重炮模式' : '机枪模式';
   const getSkillName = (type: CharacterType) => {
       switch(type) {

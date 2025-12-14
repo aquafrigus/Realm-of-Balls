@@ -29,6 +29,10 @@ const CAT_AVATAR = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000
 // Cat Skill: Scooper
 const CAT_SKILL = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23fffbeb' rx='20'/%3E%3C!-- Handle --%3E%3Crect x='45' y='50' width='10' height='40' fill='%239ca3af'/%3E%3C!-- Scoop --%3E%3Cpath d='M20 20 L80 20 L70 60 L30 60 Z' fill='%23ef4444' stroke='%23b91c1c' stroke-width='3' stroke-linejoin='round'/%3E%3C!-- Slots --%3E%3Crect x='35' y='30' width='5' height='20' fill='%23b91c1c' rx='2'/%3E%3Crect x='50' y='30' width='5' height='20' fill='%23b91c1c' rx='2'/%3E%3Crect x='65' y='30' width='5' height='20' fill='%23b91c1c' rx='2'/%3E%3C/svg%3E`;
 
+// Coach Avatar: Target Dummy
+const COACH_AVATAR = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='45' fill='%23f8fafc' stroke='%23475569' stroke-width='4'/%3E%3Ccircle cx='50' cy='50' r='35' fill='%23ef4444'/%3E%3Ccircle cx='50' cy='50' r='25' fill='%23f8fafc'/%3E%3Ccircle cx='50' cy='50' r='15' fill='%23ef4444'/%3E%3Ccircle cx='50' cy='50' r='5' fill='%23f8fafc'/%3E%3C/svg%3E`;
+const COACH_SKILL = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='60' text-anchor='middle' fill='white' font-size='20'%3EAI%3C/text%3E%3C/svg%3E`;
+
 export interface CharacterImageSet {
     avatar: string;
     skill: string;
@@ -50,5 +54,9 @@ export const CHARACTER_IMAGES: Record<CharacterType, CharacterImageSet> = {
     [CharacterType.CAT]: {
         avatar: CAT_AVATAR,
         skill: CAT_SKILL
+    },
+    [CharacterType.COACH]: {
+        avatar: COACH_AVATAR,
+        skill: COACH_SKILL
     }
 };

@@ -5,6 +5,7 @@ export enum CharacterType {
   TANK = 'TANK',
   WUKONG = 'WUKONG',
   CAT = 'CAT',
+  COACH = 'COACH',
 }
 
 export enum TankMode {
