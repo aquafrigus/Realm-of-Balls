@@ -1,17 +1,19 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { 
-  CharacterType, GameState, PlayerState, Vector2, TankMode, Projectile, GroundEffect, Obstacle, FloatingText, Drone
+  CharacterType, GameState, PlayerState, Vector2, TankMode, GroundEffect, Obstacle, Drone
 } from '../types';
 import { 
-  MAP_SIZE, PHYSICS, CHAR_STATS, VIEWPORT_PADDING 
+  MAP_SIZE, PHYSICS, CHAR_STATS
 } from '../constants';
 import * as Utils from '../utils';
 import { Sound } from '../sound';
 import { CHARACTER_IMAGES } from '../images';
+import type { GameConfig } from './CustomGameSetup';
 
 interface GameProps {
   playerType: CharacterType;
   enemyType?: CharacterType | 'RANDOM';
+  customConfig?: GameConfig | null;
   onExit: () => void;
 }
 
@@ -43,7 +45,7 @@ interface UIState {
     gameStatus: string;
 }
 
-const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
+const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
   
@@ -63,6 +65,42 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
   const lastPyroSoundTimeRef = useRef<number>(0);
   const lastDroneSoundTimeRef = useRef<number>(0);
 
+  interface StatusSnapshot {
+      // === 基础状态 ===
+      wet: boolean;         // 湿身
+      burn: boolean;        // 灼烧
+      slow: boolean;        // 减速
+      overheat: boolean;    // 过热
+      
+      // === 核心机制 ===
+      tankMode: TankMode;   // 重炮模式
+      lives: number;        // 剩余命数
+      ammo: number;         // 用于检测装填完成
+      isReloading: boolean; // 装填中
+      
+      // === 控制状态 ===
+      fear: boolean;        // 恐惧
+      silence: boolean;     // 沉默
+      disarm: boolean;      // 缴械
+      stun: boolean;        // 硬控 (眩晕/拍扁/麻痹/瘫痪)
+      root: boolean;        // 束缚
+      sleep: boolean;       // 催眠（zZz）
+      petrify: boolean;     // 石化
+      blind: boolean;       // 致盲
+      taunt: boolean;       // 嘲讽
+      
+      // === 增益/特殊 ===
+      invincible: boolean;  // 无敌
+      stealth: boolean;     // 隐身
+      haste: boolean;       // 加速
+      
+      // === 计数器 ===
+      idleTimer: number;    // 待机（zZz）
+  }
+  
+  const prevStatus = useRef<Map<string, StatusSnapshot>>(new Map()); 
+  const textCooldownsRef = useRef<Map<string, Record<string, number>>>(new Map());
+      
   const isMechanical = (entity: any): boolean => {
       return entity.isSummon === true && entity.projectileType !== 'MAGMA_POOL'; 
   };  
@@ -97,7 +135,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
         y: Math.random() * (MAP_SIZE.height - largeWaterH),
         width: largeWaterW,
         height: largeWaterH,
-        type: 'WATER'
+        type: 'WATER',
+        priority: 1
     });
 
     // 2. Generate 2-3 Large Solid Obstacles (Fixed requirement)
@@ -112,7 +151,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
             y: Math.random() * (MAP_SIZE.height - h),
             width: w,
             height: h,
-            type: 'WALL'
+            type: 'WALL',
+            priority: 10
         });
     }
 
@@ -139,12 +179,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
     for(let i=0; i<numRandomWalls + numRandomWater; i++) {
        let attempts = 0;
        while(attempts < 50) {
-          // Thinner walls possible now (40 - 240 width range)
           const w = 40 + Math.random() * 200;
           const h = 40 + Math.random() * 200;
           const x = Math.random() * (MAP_SIZE.width - w);
           const y = Math.random() * (MAP_SIZE.height - h);
           const type: 'WALL' | 'WATER' = i < numRandomWalls ? 'WALL' : 'WATER';
+          const priority = type === 'WALL' ? 10 : 1;
           const newObs: Obstacle = { id: `obs-random-${i}`, x, y, width: w, height: h, type };
 
           if (isValid(newObs)) {
@@ -156,6 +196,67 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
     }
     return obs;
   };
+
+// 1. 计算出生点（支持多人）
+const getSpawnPoints = (count: number) => {
+    const points: Vector2[] = [];
+    const padding = 300;
+    const w = MAP_SIZE.width;
+    const h = MAP_SIZE.height;
+    
+    // 2人对战：左上、右下
+    if (count === 2) {
+        points.push({ x: padding, y: padding });
+        points.push({ x: w - padding, y: h - padding });
+    } 
+    // 4人对战：四角
+    else if (count === 4) {
+        points.push({ x: padding, y: padding });
+        points.push({ x: w - padding, y: h - padding });
+        points.push({ x: w - padding, y: padding });
+        points.push({ x: padding, y: h - padding });
+    } 
+    // 其他人数：圆形分布
+    else {
+        const cx = w / 2;
+        const cy = h / 2;
+        const r = Math.min(w, h) / 2 - padding;
+        for(let i=0; i<count; i++) {
+            const angle = (Math.PI * 2 * i) / count;
+            points.push({
+                x: cx + Math.cos(angle) * r,
+                y: cy + Math.sin(angle) * r
+            });
+        }
+    }
+    return points;
+};
+
+// 2. 初始化玩家列表
+const initPlayers = (): PlayerState[] => {
+    if (customConfig) {
+        // 使用自定义配置
+        const spawns = getSpawnPoints(customConfig.players.length);
+        return customConfig.players.map((cfg, i) => 
+            createPlayer(cfg.type, spawns[i], cfg.isPlayer ? 'player' : `bot_${i}`, cfg.teamId, cfg.isBot)
+        );
+    } else {
+        // 传统的快速开始 (1v1)
+        const spawns = getSpawnPoints(2);
+        // 玩家永远是 team 0
+        const p1 = createPlayer(playerType, spawns[0], 'player', 0, false);
+        
+        let eType = enemyType as CharacterType;
+        if (enemyType === 'RANDOM' || !enemyType) {
+            const types = [CharacterType.PYRO, CharacterType.TANK, CharacterType.WUKONG, CharacterType.CAT];
+            eType = types[Math.floor(Math.random() * types.length)];
+        }
+        
+        // 敌人永远是 team 1
+        const p2 = createPlayer(eType, spawns[1], 'enemy', 1, true);
+        return [p1, p2];
+    }
+};
 
   const getRandomEdgePos = () => {
     const edge = Math.floor(Math.random() * 4);
@@ -186,19 +287,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
 
   // Game State Ref
   const stateRef = useRef<GameState>({
-    player: createPlayer(playerType, spawnPlayer, 'player'),
-    enemy: createPlayer(
-      (() => {
-        if (enemyType && enemyType !== 'RANDOM') {
-            return enemyType;
-        }
-        // PURE RANDOM SELECTION (INCLUDING MIRROR MATCHES)
-        const types = [CharacterType.PYRO, CharacterType.TANK, CharacterType.WUKONG, CharacterType.CAT];
-        return types[Math.floor(Math.random() * types.length)];
-      })(), 
-      spawnEnemy, 
-      'enemy'
-    ),
+    players: initPlayers(),
     projectiles: [],
     particles: [],
     groundEffects: [],
@@ -209,12 +298,48 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
     gameStatus: 'PLAYING',
   });
 
+// 获取本地玩家（用于输入控制、UI显示）
+const getHumanPlayer = () => {
+    return stateRef.current.players.find(p => p.id === 'player') || stateRef.current.players[0];
+};
+
+// 获取某人的所有敌人（用于攻击判定、AI索敌）
+const getEnemies = (p: PlayerState) => {
+    // 找出所有 阵营不同 且 没死 的玩家/机器人
+    const enemies: any[] = stateRef.current.players.filter(other => 
+        other.id !== p.id && other.teamId !== p.teamId && !other.isDead
+    );
+    
+    // 同时也把敌对阵营的无人机算作敌人
+    stateRef.current.drones.forEach(d => {
+        const owner = stateRef.current.players.find(pl => pl.id === d.ownerId);
+        // 如果无人机的主人存在，且是敌对阵营，且无人机活着
+        if (owner && owner.teamId !== p.teamId && d.hp > 0 && !d.isDocked) {
+            enemies.push(d);
+        }
+    });
+    return enemies;
+};
+
+// 获取最近的敌人（用于AI）
+const getNearestEnemy = (p: PlayerState) => {
+    let nearest = null;
+    let minDst = Infinity;
+    const enemies = getEnemies(p);
+    enemies.forEach(e => {
+        const d = Utils.dist(p.pos, e.pos);
+        if (d < minDst) {
+            minDst = d;
+            nearest = e;
+        }
+    });
+    return nearest;
+};
+
   const keysRef = useRef<{ [key: string]: boolean }>({});
   const mouseRef = useRef<Vector2>({ x: 0, y: 0 });
   const mouseBtnsRef = useRef<{ [key: string]: boolean }>({});
   
-  // UI State (Only for low-frequency updates now)
-  // Explicitly typed to avoid inference issues with Enums (especially 'CAT')
   const [uiState, setUiState] = useState<UIState>({
     pArtAmmo: 0, pMaxArtAmmo: 5, // Tank Artillery
     pLmgAmmo: 0, pMaxLmgAmmo: 200, pIsReloadingLmg: false, // Tank LMG
@@ -234,18 +359,20 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
     pCatCharge: 0,
     eCatLives: 0,
     
-    eType: stateRef.current.enemy.type,
+    eType: (stateRef.current.players.find(p => p.id !== 'player') || stateRef.current.players[0]).type,
     gameStatus: 'PLAYING'
   });
 
   // --- Initialization ---
 
-  function createPlayer(type: CharacterType, pos: Vector2, id: string): PlayerState {
+  function createPlayer(type: CharacterType, pos: Vector2, id: string, teamId: number, isBot: boolean): PlayerState {
     const stats: any = CHAR_STATS[type];
     
     return {
       id,
       type,
+      teamId,
+      isBot,
       pos,
       vel: { x: 0, y: 0 },
       radius: stats.radius,
@@ -324,15 +451,21 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       disarmTimer: 0,
       silenceTimer: 0,
       fearTimer: 0,
-      paralysisTimer: 0,
-      bufferedInput: 'NONE',
+      stunTimer: 0,
+      blindTimer: 0,
+      tauntTimer: 0,
+      rootTimer: 0,
+      sleepTimer: 0,
+      petrifyTimer: 0,
+      charmTimer: 0,
 
       // AI defaults
       lastPos: pos,
       stuckTimer: 0,
       unstuckTimer: 0,
       unstuckDir: {x:0, y:0},
-      burstTimer: 0
+      burstTimer: 0,
+      bufferedInput: 'NONE',
     };
   }
 
@@ -340,8 +473,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => { 
       keysRef.current[e.code] = true;
-      const p = stateRef.current.player;
-      if (p.isDead) return;
+      const p = getHumanPlayer();
+      if (p.isDead || p.isBot) return;
       if (p.type === CharacterType.WUKONG && e.code === 'Space' && p.skillCooldown <= 0) {
           if (p.wukongChargeState === 'NONE' && p.silenceTimer <= 0) {
             p.wukongChargeState = 'SMASH';
@@ -360,8 +493,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
 
   const handleKeyUp = useCallback((e: KeyboardEvent) => { 
       keysRef.current[e.code] = false; 
-      const p = stateRef.current.player;
-      if (p.isDead) return;
+      const p = getHumanPlayer();
+      if (p.isDead || p.isBot) return;
       if (p.type === CharacterType.WUKONG && e.code === 'Space' && p.wukongChargeState === 'SMASH') {
           releaseWukongSmash(p);
       }
@@ -376,8 +509,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       mouseBtnsRef.current[btn] = true;
       keysRef.current[`Mouse${btn}`] = true;
       
-      const p = stateRef.current.player;
-      if (p.isDead) return;
+      const p = getHumanPlayer();
+      if (p.isDead || p.isBot) return;
       if (p.type === CharacterType.WUKONG) {
           if (btn === 'Left') {
               handleWukongCombo(p);
@@ -418,8 +551,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       mouseBtnsRef.current[btn] = false;
       keysRef.current[`Mouse${btn}`] = false; 
 
-      const p = stateRef.current.player;
-      if (p.isDead) return;
+      const p = getHumanPlayer();
+      if (p.isDead || p.isBot) return;
       if (p.type === CharacterType.WUKONG && btn === 'Right' && p.wukongChargeState === 'THRUST') {
           releaseWukongThrust(p);
       } else if (p.type === CharacterType.CAT && btn === 'Left') {
@@ -493,10 +626,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       }
 
       // --- Logic ---
-      const enemies = p.id === 'player' ? [stateRef.current.enemy] : [stateRef.current.player];
-      stateRef.current.drones.forEach(d => {
-          if (d.ownerId !== p.id && d.hp > 0 && !d.isDocked) enemies.push(d as any);
-      });
+      const enemies = getEnemies(p);
 
       enemies.forEach(e => {
           const dist = Utils.dist(p.pos, e.pos);
@@ -510,17 +640,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
               
               if (isLastLife) {
                   e.fearTimer = 2.5; 
-                  stateRef.current.floatingTexts.push({
-                       id: Math.random().toString(), pos: {x: e.pos.x, y: e.pos.y-40},
-                       text: "恐惧!", color: '#d8b4fe', life: 1.0, maxLife: 1.0, velY: -1 
-                  });
               } else {
                   e.disarmTimer = 2.5;
                   e.silenceTimer = 2.5;
-                  stateRef.current.floatingTexts.push({
-                       id: Math.random().toString(), pos: {x: e.pos.x, y: e.pos.y-40},
-                       text: "被萌翻!", color: '#f9a8d4', life: 1.0, maxLife: 1.0, velY: -1 
-                  });
               }
               
               if (e.type === CharacterType.WUKONG) {
@@ -572,7 +694,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       const stats = CHAR_STATS[CharacterType.CAT];
       p.skillCooldown = stats.skillCooldown / 1000;
       
-      const enemy = p.id === 'player' ? stateRef.current.enemy : stateRef.current.player;
+      const enemy = getNearestEnemy(p);
+      if (!enemy) return;
       let target: any = enemy;
       
       // 1. 获取最近的敌方无人机
@@ -692,13 +815,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       triggerVisual(1); 
       setTimeout(() => triggerVisual(-1), 200);
 
-      // Hit Logic (Kept exactly as before)
-      const enemyPlayer = p.id === 'player' ? stateRef.current.enemy : stateRef.current.player;
-      const potentialTargets: any[] = [];
-      if (!enemyPlayer.isDead) potentialTargets.push(enemyPlayer);
-      stateRef.current.drones.forEach(d => {
-          if (d.ownerId !== p.id && d.hp > 0 && !d.isDocked) potentialTargets.push(d);
-      });
+      // Hit Logic
+      const potentialTargets = getEnemies(p);
 
       potentialTargets.forEach(target => {
           const toTarget = Utils.sub(target.pos, p.pos);
@@ -713,13 +831,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                   if ('isSummon' in target) {
                        target.hp -= stats.scratchDamage;
                        spawnParticles(target.pos, 5, '#6ee7b7', 4);
-                       if (target.hp <= 0) {
-                            createExplosion(stateRef.current, target.pos, 40, 0, p.id);
-                            const owner = target.ownerId === stateRef.current.player.id ? stateRef.current.player : stateRef.current.enemy;
-                            owner.droneState = 'RECONSTRUCTING';
-                            owner.droneTimer = 0;
-                            owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
-                       }
+                       if (target.hp <= 0) killEntity(target, p.id);
                   } else {
                        // Hitstun
                        target.vel = { x: 0, y: 0 };
@@ -751,7 +863,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
           radius: stats.droneRadius,
           mass: 50,
           color: '#34d399',
-          state: 'PATROL', // Initial state
+          state: 'PATROL',
           attackCooldown: 0,
           patrolAngle: 0,
           isSummon: true,
@@ -759,19 +871,18 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       };
 
       stateRef.current.drones.push(drone);
-      p.droneState = 'DEPLOYED'; // Status updated
+      p.droneState = 'DEPLOYED'; 
       p.activeDroneId = drone.id;
       Sound.playSkill('SWITCH'); 
   };
 
   const updateDrones = (state: GameState, dt: number) => {
-      // Clean up drones that are destroyed or docked
-      // Note: We use !d.isDocked to keep them until they dock, and d.hp > 0 to keep them alive
       state.drones = state.drones.filter(d => d.hp > 0 && !d.isDocked);
 
       state.drones.forEach(d => {
-          const owner = state.player.id === d.ownerId ? state.player : state.enemy;
-          const enemyPlayer = state.player.id === d.ownerId ? state.enemy : state.player;
+          const owner = state.players.find(p => p.id === d.ownerId);
+          if (!owner) return; 
+          const enemyPlayer = getNearestEnemy(owner);
 
           // 1. Life/Battery drain
           d.life -= dt * 1000;
@@ -802,12 +913,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
               // Target Selection: Hostile Player > Hostile Drone
               let target: {pos: Vector2, isDead: boolean, radius: number} | null = null;
               
-              // Aggro Range check (Super Horizon)
               // If enemy is within Aggro Range but outside Attack Range, track them.
-              const distToEnemy = Utils.dist(d.pos, enemyPlayer.pos);
+              const distToEnemy = enemyPlayer ? Utils.dist(d.pos, enemyPlayer.pos) : 99999;
               const aggroRange = stats.droneAggroRange || 1500;
               
-              if (!enemyPlayer.isDead && distToEnemy < aggroRange) {
+              if (enemyPlayer && !enemyPlayer.isDead && distToEnemy < aggroRange) {
                   target = enemyPlayer;
               } else {
                   // Check enemy drones
@@ -919,7 +1029,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       const newEffects: GroundEffect[] = [];
 
       state.groundEffects.forEach(g => {
-          if (g.type === 'MAGMA_POOL') {
+          // [修改] 增加 g.ownerId === p.id 判断，只引爆自己释放的岩浆
+          if (g.type === 'MAGMA_POOL' && g.ownerId === p.id) {
               exploded = true;
               
               // Visuals
@@ -933,55 +1044,42 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                  size: 200
               });
 
-              // Mechanics: Players
-              [state.player, state.enemy].forEach(t => {
-                  if (t.isDead) return;
+              // [修改] 获取所有敌对目标（玩家 + 无人机）
+              const enemies = getEnemies(p);
+
+              enemies.forEach(t => {
                   const dist = Utils.dist(g.pos, t.pos);
                   if (dist < 200 + t.radius) { // Explosion Radius
-                       // Damage
-                       if (t.id !== g.ownerId) {
-                           takeDamage(t, 150, CharacterType.PYRO); // Burst damage
+                       // 区分目标类型：无人机 vs 玩家
+                       if ('isSummon' in t) {
+                           // --- 针对无人机的逻辑 ---
+                           t.hp -= 250; // 对轻型单位造成巨额伤害
+                           
+                           // 简单的推开效果 (无人机质量轻，不用物理引擎计算)
+                           const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
+                           t.pos = Utils.add(t.pos, Utils.mult(dir, 100)); 
+                           
+                           spawnParticles(t.pos, 10, '#f97316', 5);
+
+                           if (t.hp <= 0) {
+                               killEntity(t, p.id); // [新增] 使用统一的击杀函数
+                           }
+                       } else {
+                           // --- 针对玩家的逻辑 ---
+                           takeDamage(t, 150, CharacterType.PYRO); 
+                           
+                           // 物理击退
+                           const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
+                           applyKnockback(t, dir, 800);
+
+                           t.burstFlag = true;
+
+                           // 附加状态 (灼烧)
+                           if (t.type !== CharacterType.PYRO) {
+                               t.burnTimer = 5.0;
+                               t.flameExposure = 100;
+                           }
                        }
-                       
-                       // Knockback (All units)
-                       const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
-                       applyKnockback(t, dir, 800);
-
-                       // Burn (Non-Pyro)
-                       if (t.type !== CharacterType.PYRO) {
-                           t.burnTimer = 5.0;
-                           t.flameExposure = 100;
-                           state.floatingTexts.push({
-                               id: Math.random().toString(),
-                               pos: { x: t.pos.x, y: t.pos.y - t.radius - 50 },
-                               text: "爆燃！",
-                               color: '#ef4444',
-                               life: 1.0, maxLife: 1.0, velY: -3
-                           });
-                       }
-                  }
-              });
-
-              // Mechanics: Drones (Explosions hit air units)
-              state.drones.forEach(d => {
-                  if (d.hp > 0 && !d.isDocked) {
-                      const dist = Utils.dist(g.pos, d.pos);
-                      if (dist < 200 + d.radius) {
-                          d.hp -= 250; // Massive damage to light drones
-                          // Drone Knockback
-                          const dir = Utils.normalize(Utils.sub(d.pos, g.pos));
-                          d.pos = Utils.add(d.pos, Utils.mult(dir, 100)); // Push away
-                          
-                          spawnParticles(d.pos, 10, '#f97316', 5);
-
-                          if (d.hp <= 0) {
-                               createExplosion(state, d.pos, 40, 0, p.id);
-                               const owner = d.ownerId === state.player.id ? state.player : state.enemy;
-                               owner.droneState = 'RECONSTRUCTING';
-                               owner.droneTimer = 0;
-                               owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
-                          }
-                      }
                   }
               });
 
@@ -1031,13 +1129,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
           Sound.playShot('SWING');
       }
 
-      // Hit Detection: Players AND Drones
-      const enemyPlayer = p.id === 'player' ? stateRef.current.enemy : stateRef.current.player;
-      const potentialTargets: any[] = [];
-      if (!enemyPlayer.isDead) potentialTargets.push(enemyPlayer);
-      stateRef.current.drones.forEach(d => {
-          if (d.ownerId !== p.id && d.hp > 0 && !d.isDocked) potentialTargets.push(d);
-      });
+      // Hit Detection
+      const potentialTargets = getEnemies(p);
 
       potentialTargets.forEach(target => {
           const toTarget = Utils.sub(target.pos, p.pos);
@@ -1057,14 +1150,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                       const pushDir = Utils.normalize(toTarget);
                       target.pos = Utils.add(target.pos, Utils.mult(pushDir, knockback * 0.1));
 
-                      // [Fix] Kill Logic for Drones
-                      if (target.hp <= 0) {
-                           createExplosion(stateRef.current, target.pos, 40, 0, p.id);
-                           const owner = target.ownerId === stateRef.current.player.id ? stateRef.current.player : stateRef.current.enemy;
-                           owner.droneState = 'RECONSTRUCTING';
-                           owner.droneTimer = 0;
-                           owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
-                       }
+                      if (target.hp <= 0) killEntity(target, p.id);
                   } else {
                       // Damage Player
                       takeDamage(target, damage, CharacterType.WUKONG);
@@ -1102,12 +1188,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       const dir = { x: Math.cos(p.aimAngle), y: Math.sin(p.aimAngle) };
 
       // Hit Detection
-      const enemyPlayer = p.id === 'player' ? stateRef.current.enemy : stateRef.current.player;
-      const potentialTargets: any[] = [];
-      if (!enemyPlayer.isDead) potentialTargets.push(enemyPlayer);
-      stateRef.current.drones.forEach(d => {
-          if (d.ownerId !== p.id && d.hp > 0 && !d.isDocked) potentialTargets.push(d);
-      });
+      const potentialTargets = getEnemies(p);
 
       potentialTargets.forEach(target => {
           const toTarget = Utils.sub(target.pos, p.pos);
@@ -1121,14 +1202,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                  target.hp -= damage;
                  spawnParticles(target.pos, 5, '#6ee7b7', 4);
                  
-                 // [Fix] Kill Logic for Drones
-                 if (target.hp <= 0) {
-                      createExplosion(stateRef.current, target.pos, 40, 0, p.id);
-                      const owner = target.ownerId === stateRef.current.player.id ? stateRef.current.player : stateRef.current.enemy;
-                      owner.droneState = 'RECONSTRUCTING';
-                      owner.droneTimer = 0;
-                      owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
-                 }
+                 if (target.hp <= 0) killEntity(target, p.id);
               } else {
                  takeDamage(target, damage, CharacterType.WUKONG);
                  applyKnockback(target, dir, 800 * (1+chargePct)); 
@@ -1192,12 +1266,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       });
       
       // 6. Hit Detection
-      const enemyPlayer = p.id === 'player' ? stateRef.current.enemy : stateRef.current.player;
-      const potentialTargets: any[] = [];
-      if (!enemyPlayer.isDead) potentialTargets.push(enemyPlayer);
-      stateRef.current.drones.forEach(d => {
-          if (d.ownerId !== p.id && d.hp > 0 && !d.isDocked) potentialTargets.push(d);
-      });
+      const potentialTargets = getEnemies(p);
 
       potentialTargets.forEach(target => {
           const distToSmash = Utils.distToSegment(target.pos, startPos, endPos);
@@ -1206,14 +1275,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                   target.hp -= damage;
                   spawnParticles(target.pos, 10, '#6ee7b7', 8);
 
-                  // [Fix] Kill Logic for Drones
-                  if (target.hp <= 0) {
-                       createExplosion(stateRef.current, target.pos, 40, 0, p.id);
-                       const owner = target.ownerId === stateRef.current.player.id ? stateRef.current.player : stateRef.current.enemy;
-                       owner.droneState = 'RECONSTRUCTING';
-                       owner.droneTimer = 0;
-                       owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
-                  }
+                  if (target.hp <= 0) killEntity(target, p.id);
               } else {
                   takeDamage(target, damage, CharacterType.WUKONG);
                   applyKnockback(target, aimDir, 900 + 300 * chargePct);
@@ -1240,279 +1302,197 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
       target.vel = Utils.add(target.vel, dv);
   };
 
+  const killEntity = (entity: any, killerId: string) => {
+      // 专门处理召唤物（无人机）的销毁逻辑
+      if ('isSummon' in entity) {
+          createExplosion(stateRef.current, entity.pos, 40, 0, killerId);
+          // 找到无人机的主人，设置重建CD
+          const owner = stateRef.current.players.find(p => p.id === entity.ownerId);
+          if (owner) {
+             owner.droneState = 'RECONSTRUCTING';
+             owner.droneTimer = 0;
+             owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
+          }
+          entity.hp = 0; // 确保血量归零
+      }
+  };
+
   // --- Main Loop ---
 
   const update = (deltaTime: number) => {
     const state = stateRef.current;
     if (state.gameStatus !== 'PLAYING') return;
 
-    // Capture previous status for floating text detection
-    const prevStatus = new Map<string, {wet: boolean, burn: boolean, slow: boolean, overheat: boolean}>();
-    [state.player, state.enemy].forEach(p => {
-        prevStatus.set(p.id, {
-            wet: p.isWet,
-            burn: p.burnTimer > 0,
-            slow: p.slowTimer > 0,
-            overheat: p.isOverheated
-        });
+    // 1. [新增] 遍历所有玩家进行死亡判定
+    state.players.forEach(entity => {
+        if (entity.hp <= 0 && !entity.isDead) {
+            // 教练球特殊复活
+            if (entity.type === CharacterType.COACH) {
+                createExplosion(state, entity.pos, 80, 0, 'system', true);
+                entity.hp = entity.maxHp;
+                entity.pos = { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 };
+                entity.vel = { x: 0, y: 0 };
+                entity.statusLabel = "很好！很有精神！";
+                return;
+            }
+            // 猫猫球九命机制
+            if (entity.type === CharacterType.CAT && (entity.lives || 0) > 1) {
+                entity.lives = (entity.lives || 1) - 1;
+                entity.hp = entity.maxHp; 
+                entity.invincibleTimer = 1.5; 
+                entity.pos = { x: Math.random() * (MAP_SIZE.width-400)+200, y: Math.random() * (MAP_SIZE.height-400)+200 }; 
+                entity.vel = { x: 0, y: 0 };
+                Sound.playSkill('SWITCH'); 
+                spawnParticles(entity.pos, 30, '#d1d5db', 8, 1.5);
+                return;
+            }
+
+            // 真正死亡
+            entity.isDead = true;
+            if (entity.type === CharacterType.CAT) entity.lives = 0;
+            Sound.playExplosion();
+            createExplosion(state, entity.pos, 80, 0, 'system', true);
+        }
     });
 
-    // Death Checks
-    const checkDeath = (entity: PlayerState) => {
-       if (entity.hp <= 0 && !entity.isDead) {
-          // 教练球特殊复活机制
-          if (entity.type === CharacterType.COACH) {
-              // 1. 播放爆炸特效
-              createExplosion(state, entity.pos, 80, 0, 'system', true);
-              Sound.playUI('START'); // 播放一个重置音效
-
-              // 2. 浮动文字提示
-              state.floatingTexts.push({
-                   id: Math.random().toString(),
-                   pos: {x: entity.pos.x, y: entity.pos.y - 50},
-                   text: "复活!",
-                   color: '#ffffff',
-                   life: 2.0, maxLife: 2.0, velY: -2
-              });
-
-              // 3. 瞬间满血并传送回中心
-              entity.hp = entity.maxHp;
-              entity.pos = { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 };
-              entity.vel = { x: 0, y: 0 };
-              
-              // 4. 清除身上的负面状态
-              entity.burnTimer = 0;
-              entity.slowTimer = 0;
-              entity.flameExposure = 0;
-              entity.disarmTimer = 0;
-              entity.silenceTimer = 0;
-              entity.fearTimer = 0;
-              entity.paralysisTimer = 0;
-
-              return;
-          }
-
-          // CAT NINE LIVES MECHANIC
-          if (entity.type === CharacterType.CAT && (entity.lives || 0) > 1) {
-              entity.lives = (entity.lives || 1) - 1;
-              entity.hp = entity.maxHp; // Full Heal
-              entity.invincibleTimer = 1.5; // I-Frames
-              
-              // Teleport to safe location (Far from enemy)
-              const enemyPos = entity.id === 'player' ? state.enemy.pos : state.player.pos;
-              let safePos = entity.pos;
-              let bestDist = 0;
-              for(let i=0; i<5; i++) {
-                   const p = getRandomEdgePos();
-                   const d = Utils.dist(p, enemyPos);
-                   if (d > bestDist) {
-                       bestDist = d;
-                       safePos = p;
-                   }
-              }
-              entity.pos = safePos;
-              
-              // Effects
-              Sound.playSkill('SWITCH'); // Smoke sound
-              spawnParticles(entity.pos, 30, '#d1d5db', 8, 1.5); // Smoke
-              state.floatingTexts.push({
-                   id: Math.random().toString(),
-                   pos: {x: entity.pos.x, y: entity.pos.y - 50},
-                   text: `剩余命数: ${entity.lives}`,
-                   color: '#fbbf24',
-                   life: 2.0, maxLife: 2.0, velY: -2
-              });
-              return;
-          }
-
-          // NORMAL DEATH
-          entity.isDead = true;
-          if (entity.type === CharacterType.CAT) {
-              entity.lives = 0;
-          }
-          Sound.playExplosion();
-          if (entity.type === CharacterType.PYRO) {
-             spawnParticles(entity.pos, 120, '#EEEEEE', 15, 2.5, 0.85);
-          } else if (entity.type === CharacterType.CAT) {
-             // Cat turns into smoke
-             spawnParticles(entity.pos, 50, '#fef3c7', 5, 2);
-          } else {
-             createExplosion(state, entity.pos, 80, 0, 'system', true);
-             spawnParticles(entity.pos, 50, entity.color, 10, 2);
-          }
-       }
-    };
-    
-    checkDeath(state.player);
-    checkDeath(state.enemy);
-
-    if (state.player.isDead) {
-        state.player.matchEndTimer += deltaTime;
-        if (state.player.matchEndTimer > 2.0) {
+    // 2. [新增] 胜负判定 (基于人类玩家)
+    const human = getHumanPlayer();
+    if (human.isDead) {
+        human.matchEndTimer += deltaTime;
+        if (human.matchEndTimer > 2.0) {
             state.gameStatus = 'DEFEAT';
             Sound.playUI('DEFEAT');
         }
     } else {
-        handlePlayerInput(state.player, deltaTime);
+        // 胜利条件：所有敌对阵营的单位都死亡
+        const enemies = state.players.filter(p => p.teamId !== human.teamId);
+        // 如果有敌人且所有敌人都死了 -> 胜利
+        if (enemies.length > 0 && enemies.every(e => e.isDead)) {
+             human.matchEndTimer += deltaTime; 
+             if (human.matchEndTimer > 1.0) {
+                state.gameStatus = 'VICTORY';
+                Sound.playUI('VICTORY');
+             }
+        }
     }
 
-    if (state.enemy.isDead) {
-        state.enemy.matchEndTimer += deltaTime;
-        if (state.enemy.matchEndTimer > 2.0) {
-            state.gameStatus = 'VICTORY';
-            Sound.playUI('VICTORY');
+    // 3. [新增] 驱动逻辑 (输入 或 AI)
+    state.players.forEach(p => {
+        if (p.isDead) return;
+        if (p.id === 'player') {
+            handlePlayerInput(p, deltaTime);
+        } else {
+            handleAI(p, deltaTime);
         }
-    } else {
-        handleAI(state.enemy, state.player, deltaTime);
-    }
-
-    // 3. Physics & Collisions
-    [state.player, state.enemy].forEach(entity => {
-      if (entity.isDead) return;
-
-      entity.pos = Utils.add(entity.pos, Utils.mult(entity.vel, deltaTime * 60));
-      entity.vel = Utils.mult(entity.vel, PHYSICS.FRICTION);
-      
-      // Walls
-      if (entity.pos.x < entity.radius) { entity.pos.x = entity.radius; entity.vel.x *= -0.5; }
-      if (entity.pos.y < entity.radius) { entity.pos.y = entity.radius; entity.vel.y *= -0.5; }
-      if (entity.pos.x > MAP_SIZE.width - entity.radius) { entity.pos.x = MAP_SIZE.width - entity.radius; entity.vel.x *= -0.5; }
-      if (entity.pos.y > MAP_SIZE.height - entity.radius) { entity.pos.y = MAP_SIZE.height - entity.radius; entity.vel.y *= -0.5; }
-
-      // Reset vault flag before checking
-      entity.isVaulting = false;
-
-      // Obstacles & Water Logic
-      let isInWater = false;
-      state.obstacles.forEach(obs => {
-        if (entity.type === CharacterType.CAT && entity.isPouncing) return;
-        const col = Utils.checkCircleRectCollision(entity.pos, entity.radius, obs);
-        
-        // Physics Collision
-        if (col.collided) {
-          if (obs.type === 'WATER') {
-              // Strict Water Check: Only wet if CENTER is deeply inside
-              const padding = 15; 
-              const inRectX = entity.pos.x >= obs.x + padding && entity.pos.x <= obs.x + obs.width - padding;
-              const inRectY = entity.pos.y >= obs.y + padding && entity.pos.y <= obs.y + obs.height - padding;
-              
-              if (inRectX && inRectY) {
-                  isInWater = true;
-              }
-
-              // Physical: Non-Wukong characters bounce off (treated as wall)
-              // Wukong can enter freely.
-              if (entity.type !== CharacterType.WUKONG) {
-                  entity.pos = Utils.add(entity.pos, Utils.mult(col.normal, col.overlap));
-                  const dot = entity.vel.x * col.normal.x + entity.vel.y * col.normal.y;
-                  entity.vel = Utils.sub(entity.vel, Utils.mult(col.normal, 2 * dot));
-              }
-          }
-          else if (entity.type === CharacterType.WUKONG && obs.type === 'WALL') {
-               // Wukong Smart Vaulting Logic
-               // Determine orientation of hit
-               const isHorizontalHit = Math.abs(col.normal.x) > Math.abs(col.normal.y);
-               
-               // If hitting side, we must cross the Width. If hitting top/bottom, we must cross Height.
-               const distanceToVault = isHorizontalHit ? obs.width : obs.height;
-               
-               if (distanceToVault < 130) {
-                   // Vault successful
-                   // Check if near edge for animation/penalty
-                   const distToLeft = entity.pos.x - obs.x;
-                   const distToRight = (obs.x + obs.width) - entity.pos.x;
-                   const distToTop = entity.pos.y - obs.y;
-                   const distToBottom = (obs.y + obs.height) - entity.pos.y;
-                   
-                   // Distance from center to nearest edge
-                   const minDist = Math.min(Math.abs(distToLeft), Math.abs(distToRight), Math.abs(distToTop), Math.abs(distToBottom));
-                   
-                   // If we are touching the edge (transitioning)
-                   if (minDist < entity.radius) {
-                       entity.isVaulting = true;
-                       entity.vel = Utils.mult(entity.vel, 0.5); // 50% penalty
-                   }
-                   // Else: Free movement on top of the wall (no drag, no jitter)
-               } else {
-                   // Wall too thick to vault from this angle -> Block
-                   entity.pos = Utils.add(entity.pos, Utils.mult(col.normal, col.overlap));
-                   const dot = entity.vel.x * col.normal.x + entity.vel.y * col.normal.y;
-                   entity.vel = Utils.sub(entity.vel, Utils.mult(col.normal, 2 * dot));
-               }
-          } else {
-              // Standard Wall Collision
-              entity.pos = Utils.add(entity.pos, Utils.mult(col.normal, col.overlap));
-              const dot = entity.vel.x * col.normal.x + entity.vel.y * col.normal.y;
-              entity.vel = Utils.sub(entity.vel, Utils.mult(col.normal, 2 * dot));
-          }
-        }
-      });
-      entity.isWet = isInWater;
-      
-      if (isInWater && entity.type === CharacterType.WUKONG) {
-           // Wukong entering/moving in water visual
-           if (Math.random() < 0.05) {
-               stateRef.current.particles.push({
-                  id: Math.random().toString(),
-                  pos: Utils.add(entity.pos, {x: (Math.random()-0.5)*20, y: (Math.random()-0.5)*20}),
-                  vel: {x:0, y:0},
-                  life: 0.5, maxLife: 0.5,
-                  color: '#bae6fd', size: 3
-               });
-           }
-      }
     });
 
-    // Ball vs Ball
-    // Ball vs Ball
-    if (!state.player.isDead && !state.enemy.isDead) {
-        const distVec = Utils.sub(state.player.pos, state.enemy.pos);
-        const dist = Utils.mag(distVec);
-        const minDist = state.player.radius + state.enemy.radius;
+    // 4. [新增] 物理运动循环 (Physics Loop)
+    // 替换原有的 [state.player, state.enemy].forEach(...) 和 Ball vs Ball 逻辑
+    for (let i = 0; i < state.players.length; i++) {
+        const p1 = state.players[i];
+        if (p1.isDead) continue;
+        
+        // 移动与阻尼
+        p1.pos = Utils.add(p1.pos, Utils.mult(p1.vel, deltaTime * 60));
+        p1.vel = Utils.mult(p1.vel, PHYSICS.FRICTION);
+        
+        // 边界限制
+        if (p1.pos.x < p1.radius) { p1.pos.x = p1.radius; p1.vel.x *= -0.5; }
+        if (p1.pos.y < p1.radius) { p1.pos.y = p1.radius; p1.vel.y *= -0.5; }
+        if (p1.pos.x > MAP_SIZE.width - p1.radius) { p1.pos.x = MAP_SIZE.width - p1.radius; p1.vel.x *= -0.5; }
+        if (p1.pos.y > MAP_SIZE.height - p1.radius) { p1.pos.y = MAP_SIZE.height - p1.radius; p1.vel.y *= -0.5; }
+        
+        // 障碍物碰撞与地形判定 (Obstacles & Terrain Priority)
+        p1.isVaulting = false;
 
-        if (dist < minDist) {
-            // 检查是否有猫猫球正在飞扑
-            const p1 = state.player;
-            const p2 = state.enemy;
-            const p1Pouncing = p1.type === CharacterType.CAT && p1.isPouncing;
-            const p2Pouncing = p2.type === CharacterType.CAT && p2.isPouncing;
+        // 1. 物理阻挡 (刚体碰撞) - 只针对 WALL
+        state.obstacles.forEach(obs => {
+             if (obs.type !== 'WALL') return; // 水域不参与刚体碰撞
+             if (p1.type === CharacterType.CAT && p1.isPouncing) return; // 飞扑穿墙
 
-            // 如果有人在飞扑，跳过物理碰撞(穿人)，只做逻辑判定
-            if (p1Pouncing || p2Pouncing) {
-            } 
-            else {
-                // 物理碰撞逻辑 (推挤 + 弹射)
+             const col = Utils.checkCircleRectCollision(p1.pos, p1.radius, obs);
+             if (col.collided) {
+                 if (p1.type === CharacterType.WUKONG && obs.type === 'WALL') {
+                       // 悟空翻墙逻辑
+                       const isHorizontalHit = Math.abs(col.normal.x) > Math.abs(col.normal.y);
+                       const distanceToVault = isHorizontalHit ? obs.width : obs.height;
+                       if (distanceToVault < 130) {
+                           const distToLeft = p1.pos.x - obs.x;
+                           const distToRight = (obs.x + obs.width) - p1.pos.x;
+                           const distToTop = p1.pos.y - obs.y;
+                           const distToBottom = (obs.y + obs.height) - p1.pos.y;
+                           const minDist = Math.min(Math.abs(distToLeft), Math.abs(distToRight), Math.abs(distToTop), Math.abs(distToBottom));
+                           if (minDist < p1.radius) { p1.isVaulting = true; p1.vel = Utils.mult(p1.vel, 0.5); }
+                       } else {
+                           p1.pos = Utils.add(p1.pos, Utils.mult(col.normal, col.overlap));
+                           const dot = p1.vel.x * col.normal.x + p1.vel.y * col.normal.y;
+                           p1.vel = Utils.sub(p1.vel, Utils.mult(col.normal, 2 * dot));
+                       }
+                 } else {
+                       // 普通墙壁碰撞
+                       p1.pos = Utils.add(p1.pos, Utils.mult(col.normal, col.overlap));
+                       const dot = p1.vel.x * col.normal.x + p1.vel.y * col.normal.y;
+                       p1.vel = Utils.sub(p1.vel, Utils.mult(col.normal, 2 * dot));
+                 }
+             }
+        });
+        
+        // 2. 环境状态判定 (基于优先级)
+        const coveringZones = state.obstacles.filter(obs => {
+             const padding = 0; 
+             return p1.pos.x >= obs.x - padding && p1.pos.x <= obs.x + obs.width + padding &&
+                    p1.pos.y >= obs.y - padding && p1.pos.y <= obs.y + obs.height + padding;
+        });
+        // 按优先级降序排列 (Wall:10, Water:1)
+        coveringZones.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+        const topTerrain = coveringZones[0]; // 取最高优先级的地形
+        // 判定：如果最高优先级是 WATER，则湿身；如果是 WALL (即使重叠了水)，则以墙为准(干燥)
+        p1.isWet = topTerrain?.type === 'WATER';
+        
+        // 玩家间碰撞 (Player vs Player) - 双重循环
+        for (let j = i + 1; j < state.players.length; j++) {
+            const p2 = state.players[j];
+            if (p2.isDead) continue;
+            
+            const distVec = Utils.sub(p1.pos, p2.pos);
+            const dist = Utils.mag(distVec);
+            const minDist = p1.radius + p2.radius;
+            
+            if (dist < minDist) {
+                // 飞扑时忽略物理碰撞
+                if ((p1.type === CharacterType.CAT && p1.isPouncing) || (p2.type === CharacterType.CAT && p2.isPouncing)) continue;
+                
                 const normal = Utils.normalize(distVec);
                 const overlap = minDist - dist;
-                const m1 = state.player.mass;
-                const m2 = state.enemy.mass;
-                const totalMass = m1 + m2;
+                const totalMass = p1.mass + p2.mass;
                 
-                state.player.pos = Utils.add(state.player.pos, Utils.mult(normal, overlap * (m2 / totalMass)));
-                state.enemy.pos = Utils.sub(state.enemy.pos, Utils.mult(normal, overlap * (m1 / totalMass)));
+                // 推挤位置
+                p1.pos = Utils.add(p1.pos, Utils.mult(normal, overlap * (p2.mass / totalMass)));
+                p2.pos = Utils.sub(p2.pos, Utils.mult(normal, overlap * (p1.mass / totalMass)));
 
-                const v1 = state.player.vel;
-                const v2 = state.enemy.vel;
+                // 动量交换 (弹性碰撞)
+                const v1 = p1.vel;
+                const v2 = p2.vel;
                 const e = PHYSICS.COLLISION_ELASTICITY;
                 const v1n = v1.x * normal.x + v1.y * normal.y;
                 const v2n = v2.x * normal.x + v2.y * normal.y;
-                
-                const v1nFinal = ((m1 - e * m2) * v1n + (1 + e) * m2 * v2n) / totalMass;
-                const v2nFinal = ((m2 - e * m1) * v2n + (1 + e) * m1 * v1n) / totalMass;
+                const v1nFinal = ((p1.mass - e * p2.mass) * v1n + (1 + e) * p2.mass * v2n) / totalMass;
+                const v2nFinal = ((p2.mass - e * p1.mass) * v2n + (1 + e) * p1.mass * v1n) / totalMass;
                 
                 const v1Tan = { x: v1.x - v1n * normal.x, y: v1.y - v1n * normal.y };
                 const v2Tan = { x: v2.x - v2n * normal.x, y: v2.y - v2n * normal.y };
                 
-                state.player.vel = { x: v1Tan.x + normal.x * v1nFinal, y: v1Tan.y + normal.y * v1nFinal };
-                state.enemy.vel = { x: v2Tan.x + normal.x * v2nFinal, y: v2Tan.y + normal.y * v2nFinal };
+                p1.vel = { x: v1Tan.x + normal.x * v1nFinal, y: v1Tan.y + normal.y * v1nFinal };
+                p2.vel = { x: v2Tan.x + normal.x * v2nFinal, y: v2Tan.y + normal.y * v2nFinal };
 
+                // 撞击伤害 (仅对敌)
                 const relativeVel = Math.abs(v1n - v2n);
-                if (relativeVel > 8) {
+                if (relativeVel > 8 && p1.teamId !== p2.teamId) {
                     const baseDmg = Math.floor(relativeVel * 2);
-                    takeDamage(state.player, baseDmg); 
-                    takeDamage(state.enemy, baseDmg);
+                    takeDamage(p1, baseDmg); 
+                    takeDamage(p2, baseDmg);
                     Sound.playHit();
-                    spawnParticles(Utils.add(state.player.pos, Utils.mult(normal, -state.player.radius)), 10, '#ffffff');
+                    spawnParticles(Utils.add(p1.pos, Utils.mult(normal, -p1.radius)), 10, '#ffffff');
                 }
             }
         }
@@ -1524,100 +1504,195 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
     updateParticles(state, deltaTime);
     updateFloatingTexts(state, deltaTime);
     
-    // 猫猫球飞扑互动逻辑
-    const handlePounceInteraction = (cat: PlayerState, target: PlayerState) => {
-        if (cat.type === CharacterType.CAT && cat.isPouncing && !cat.hasPounceHit && !target.isDead) {
-            const dist = Utils.dist(cat.pos, target.pos);
-            if (dist < cat.radius + target.radius) {
-                target.slowTimer = 2.5; 
-                target.disarmTimer = 2.5; 
-                if (!isMechanical(target)) {
-                    target.silenceTimer = 2.5; // 沉默只对生物有效
-                }
-                
-                if (target.type === CharacterType.WUKONG) {
-                    target.wukongChargeState = 'NONE'; 
-                    target.wukongChargeTime = 0;       
-                    target.wukongChargeHoldTimer = 0;
-                    target.wukongLastAttackType = 'NONE';
-                    target.attackCooldown = 0.5;
-                }
-
-                takeDamage(target, CHAR_STATS[CharacterType.CAT].pounceDamage, CharacterType.CAT);
-                spawnParticles(target.pos, 15, '#f0abfc', 6); 
-                Sound.playShot('SCRATCH');
-                
-                // 标记已命中，防止单次飞扑多次伤害
-                cat.hasPounceHit = true;
-                
-                state.floatingTexts.push({
-                     id: Math.random().toString(), pos: {x: target.pos.x, y: target.pos.y - 60},
-                     text: "减速", color: '#94a3b8', life: 1.0, maxLife: 1.0, velY: -1
-                });
-                state.floatingTexts.push({
-                     id: Math.random().toString(), pos: {x: target.pos.x, y: target.pos.y - 40},
-                     text: "缴械", color: '#f87171', life: 1.0, maxLife: 1.0, velY: -1
-                });
-                if (!isMechanical(target)) {
-                    state.floatingTexts.push({
-                         id: Math.random().toString(), pos: {x: target.pos.x, y: target.pos.y - 20},
-                         text: "沉默", color: '#c084fc', life: 1.0, maxLife: 1.0, velY: -1
-                    });
-                }
-            }
-        }
-    };
-
-    handlePounceInteraction(state.player, state.enemy);
-    handlePounceInteraction(state.enemy, state.player);
-
-    updateStatus(state.player, deltaTime);
-    updateStatus(state.enemy, deltaTime);
-
-    // EMP 攻击接口
-    const applyEmp = (target: any) => {
-        if (isMechanical(target)) {
-            target.paralysisTimer = 5.0; 
-            target.disarmTimer = 5.0;
-            target.silenceTimer = 5.0;
-            
-            target.hp -= 300; 
-            
-            state.floatingTexts.push({
-                id: Math.random().toString(), pos: {x: target.pos.x, y: target.pos.y-50},
-                text: "⚡瘫痪⚡", color: '#0ea5e9', life: 1.5, maxLife: 1.5, velY: -1
-            });
-        }
-    };
-
-    // Check status changes and spawn floating text
-    [state.player, state.enemy].forEach(p => {
-        const prev = prevStatus.get(p.id);
-        if (!prev) return;
-        
-        const spawnText = (text: string, color: string) => {
-             state.floatingTexts.push({
-                id: Math.random().toString(),
-                pos: { x: p.pos.x, y: p.pos.y - p.radius - 30 },
-                text: text,
-                color: color,
-                life: 1.0, maxLife: 1.0, velY: -2 // Slow float up
+    // 猫猫球飞扑检测 (循环所有猫)
+    state.players.forEach(cat => {
+        if (cat.type === CharacterType.CAT && cat.isPouncing && !cat.hasPounceHit && !cat.isDead) {
+             const enemies = getEnemies(cat);
+             enemies.forEach(target => {
+                 const dist = Utils.dist(cat.pos, target.pos);
+                 if (dist < cat.radius + target.radius) {
+                     // 触发飞扑效果
+                     target.slowTimer = 2.5; 
+                     target.disarmTimer = 2.5; 
+                     if (!isMechanical(target)) target.silenceTimer = 2.5;
+                     if (target.type === CharacterType.WUKONG) {
+                         target.wukongChargeState = 'NONE'; target.wukongChargeTime = 0;
+                     }
+                     const dmg = CHAR_STATS[CharacterType.CAT].scratchDamage;
+                     takeDamage(target, dmg, CharacterType.CAT);
+                     spawnParticles(target.pos, 15, '#f0abfc', 6); 
+                     Sound.playShot('SCRATCH');
+                     cat.hasPounceHit = true;
+                     target.statusLabel = "踩!";
+                 }
              });
         }
+    });
+
+    state.players.forEach(p => updateStatus(p, deltaTime));
+
+    // [集中管理] 全局状态飘字系统
+    state.players.forEach(p => {
+        // 1. 初始化上一帧状态 (Snapshot)
+        const prev = prevStatus.current.get(p.id) || { 
+            wet: false, burn: false, slow: false, overheat: false,
+            tankMode: TankMode.ARTILLERY, lives: p.lives || 0,
+            fear: false, silence: false, disarm: false, stun: false, 
+            root: false, sleep: false, blind: false, taunt: false,
+            isReloading: false,
+            idleTimer: 0
+        };
+
+        // 2. 获取当前状态 (Computed Snapshot)
+        const curr = {
+            // === 基础状态 ===
+            wet: p.isWet,
+            burn: p.burnTimer > 0,
+            slow: p.slowTimer > 0,
+            overheat: p.isOverheated,
+            
+            // === 核心机制 ===
+            tankMode: p.tankMode,
+            lives: p.lives || 0,
+            ammo: p.type === CharacterType.TANK ? p.lmgAmmo : 0, 
+            isReloading: p.isReloadingLmg, 
+            
+            // === 控制状态 ===
+            fear: p.fearTimer > 0,
+            silence: p.silenceTimer > 0,
+            disarm: p.disarmTimer > 0,
+            stun: p.stunTimer > 0, 
+            root: p.rootTimer > 0,
+            sleep: p.sleepTimer > 0,
+            petrify: (p.petrifyTimer || 0) > 0, 
+            blind: p.blindTimer > 0,
+            taunt: p.tauntTimer > 0,
+            
+            // === 增益/特殊 ===
+            invincible: (p.invincibleTimer || 0) > 0,
+            stealth: (p.stealthTimer || 0) > 0, 
+            haste: (p.hasteTimer || 0) > 0,     
+            
+            // === 计数器 ===
+            idleTimer: p.idleTimer || 0
+        };
+
+        // 辅助：飘字生成
+        const spawn = (text: string, color: string, velY = -1.0, size = 16) => {
+             const now = performance.now();
+             
+             // 1. 初始化该玩家的冷却记录
+             if (!textCooldownsRef.current.has(p.id)) {
+                 textCooldownsRef.current.set(p.id, {});
+             }
+             const cooldowns = textCooldownsRef.current.get(p.id)!;
+
+             // 2. 冷却检查 (防止同一内容的字频繁出现)
+             const lastTime = cooldowns[text] || 0;
+             const cdDuration = text === "减速" ? 1200 : 800; 
+
+             if (now - lastTime < cdDuration) return; // 冷却中，不飘字
+
+             // 3. 更新冷却时间
+             cooldowns[text] = now;
+
+             state.floatingTexts.push({
+                id: Math.random().toString(),
+                pos: { x: p.pos.x + (Math.random() - 0.5) * 60, y: p.pos.y - p.radius - 40 },
+                text, color, 
+                life: 2.0,      
+                maxLife: 2.0, 
+                velY: -0.8      
+             });
+        };
+
+        let labelShown = false;
+
+        //    A. 优先处理显式标签
+        if (p.statusLabel) {
+            let color = '#ffffff';
+            if (p.statusLabel.includes('拍扁')) color = '#ef4444'; // Red
+            else if (p.statusLabel.includes('治疗') || p.statusLabel.includes('复活')) color = '#34d399'; // Green
+            else if (p.statusLabel.includes('有精神')) color = '#60a5fa'; // Blue
+            else if (p.statusLabel.includes('踩')) color = '#f472b6';
+            else color = '#fbbf24';
+
+            spawn(p.statusLabel, color, -1.5);
+            p.statusLabel = undefined;
+            labelShown = true;
+        }
+
+        //    B. 瞬时事件标记
+        if (p.burstFlag) {
+            spawn("爆燃!", '#ef4444', -3.0); // 红色大字
+            p.burstFlag = false; // 消费掉
+            labelShown = true;
+        }
+
+        //    C. 状态变化检测
+        // 1. 基础物理/元素
+        if (!prev.wet && curr.wet) spawn("湿身", '#38bdf8');
+        if (!prev.burn && curr.burn) spawn("灼烧", '#f97316');
+        if (!prev.overheat && curr.overheat) spawn("过热!", '#ef4444');
+        if (!prev.slow && curr.slow && !curr.stun && !curr.sleep && !labelShown) spawn("减速", '#94a3b8');
+
+        // 2. 控制状态
+        // 恐惧
+        if (!prev.fear && curr.fear) spawn("恐惧!", '#d8b4fe');
         
-        if (!prev.wet && p.isWet) spawnText("湿身", '#38bdf8');
-        if (!prev.burn && p.burnTimer > 0) spawnText("灼烧", '#f97316');
-        if (!prev.slow && p.slowTimer > 0) spawnText("减速", '#94a3b8');
-        if (!prev.overheat && p.isOverheated) spawnText("过热", '#ef4444');
+        // 萌翻/踩
+        const isCharmed = curr.silence && curr.disarm && !curr.fear && !curr.stun;
+        const wasCharmed = prev.silence && prev.disarm;
+        if (!wasCharmed && isCharmed && !labelShown) spawn("被萌翻!", '#f9a8d4'); 
+        
+        // 单独控制
+        if (!prev.silence && curr.silence && !isCharmed) spawn("沉默", '#94a3b8');
+        if (!prev.disarm && curr.disarm && !isCharmed) spawn("缴械", '#94a3b8');
+        if (!prev.root && curr.root) spawn("束缚", '#84cc16');
+        if (!prev.blind && curr.blind) spawn("致盲", '#1e293b'); // 深灰色
+        if (!prev.taunt && curr.taunt) spawn("嘲讽!", '#ef4444');
+
+        // 眩晕/催眠
+        if (!prev.stun && curr.stun && !labelShown) spawn("眩晕", '#ef4444');
+        if (!prev.sleep && curr.sleep) spawn("催眠", '#818cf8'); // 靛青色
+
+        // 3. 核心机制
+        // 坦克模式
+        if (p.type === CharacterType.TANK && prev.tankMode !== curr.tankMode) {
+            if (curr.tankMode === TankMode.LMG) spawn("加速!", '#34d399');
+            else spawn("重炮模式", '#fbbf24');
+        }
+        
+        // 装填
+        if (!prev.isReloading && curr.isReloading) {
+            spawn("装填中...", '#fbbf24');
+        }
+
+        // 命数变化
+        if (curr.lives < prev.lives && curr.lives > 0) {
+            spawn(`剩余命数: ${curr.lives}`, '#fbbf24', -2.0);
+        }
+        
+        // 4. 持续/周期性状态
+        if ((curr.sleep || curr.idleTimer > 3.0) && Math.random() < 0.01) {
+            spawn("zZz", '#ffffff', -0.5);
+        }
+
+        // --- 更新快照 ---
+        prevStatus.current.set(p.id, curr);
     });
 
     updateCamera(state);
   };
 
   const handlePlayerInput = (p: PlayerState, dt: number) => {
-    if (p.paralysisTimer > 0) {
-        p.vel = Utils.mult(p.vel, 0.8); // 快速急停
+    if (p.stunTimer > 0 || p.sleepTimer > 0) {
+        p.vel = Utils.mult(p.vel, 0.8);
         return;
+    }
+
+    if (p.rootTimer > 0) {
+        p.vel = { x: 0, y: 0 }; 
     }
 
     let speedMult = 1.0;
@@ -1663,11 +1738,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
 
     // 恐惧状态：强制反向移动 (远离敌人)
     if (p.fearTimer > 0) {
-        const enemy = stateRef.current.enemy;
-        const runDir = Utils.normalize(Utils.sub(p.pos, enemy.pos));
-        const fearSpeed = CHAR_STATS[p.type].speed * 0.6; 
-        p.vel = Utils.add(p.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * fearSpeed * dt * 60));
-        p.angle = Math.atan2(runDir.y, runDir.x);
+        const enemy = getNearestEnemy(p);
+        if (enemy) {
+            const runDir = Utils.normalize(Utils.sub(p.pos, enemy.pos));
+            const fearSpeed = CHAR_STATS[p.type].speed * 0.6; 
+            p.vel = Utils.add(p.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * fearSpeed * dt * 60));
+            p.angle = Math.atan2(runDir.y, runDir.x);
+        }
         return;
     }
 
@@ -1798,24 +1875,26 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
         Sound.playSkill('SWITCH');
         spawnParticles(p.pos, 5, '#ffffff');
         
-        stateRef.current.floatingTexts.push({
-           id: Math.random().toString(),
-           pos: Utils.add(p.pos, {x:0, y:-40}),
-           text: p.tankMode === TankMode.LMG ? "加速!" : "重炮模式",
-           color: p.tankMode === TankMode.LMG ? "#34d399" : "#fbbf24",
-           life: 1, maxLife: 1, velY: -1
-        });
       }
     }
   };
 
-  const handleAI = (ai: PlayerState, target: PlayerState, dt: number) => {
-    if (ai.paralysisTimer > 0) {
+  const handleAI = (ai: PlayerState, dt: number) => {
+    // 1. 自动寻找最近的敌人
+    const target = getNearestEnemy(ai);
+    
+    // 如果没有敌人，AI 停止行动或仅做简单待机
+    if (!target) {
+        ai.vel = Utils.mult(ai.vel, 0.9); // 缓慢减速
+        return;
+    }
+
+    if (ai.stunTimer > 0) {
         ai.vel = Utils.mult(ai.vel, 0.8); // 快速急停
         return;
     }
 
-    // 恐惧状态：强制远离目标，跳过决策
+    // 恐惧状态：强制远离目标
     if (ai.fearTimer > 0) {
         const runDir = Utils.normalize(Utils.sub(ai.pos, target.pos));
         const fearSpeed = CHAR_STATS[ai.type].speed * 0.6;
@@ -1824,159 +1903,83 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
         return; 
     }
 
-    // 教练球 AI
+    // 教练球 AI (保持不变)
     if (ai.type === CharacterType.COACH) {
-        if (Math.random() < 0.02) { // 约每秒一次改变方向
-            const randAngle = Math.random() * Math.PI * 2;
-            ai.aimAngle = randAngle;
-            ai.angle = randAngle;
+        if (Math.random() < 0.02) { 
+            ai.aimAngle = Math.random() * Math.PI * 2;
+            ai.angle = ai.aimAngle;
         }
-
-        const moveDir = { x: Math.cos(ai.angle), y: Math.sin(ai.angle) };
         const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[CharacterType.COACH].speed;
         
+        // 保持在中心区域活动
         const distToCenter = Utils.dist(ai.pos, {x: MAP_SIZE.width/2, y: MAP_SIZE.height/2});
         if (distToCenter > 500) {
              const toCenter = Utils.normalize(Utils.sub({x: MAP_SIZE.width/2, y: MAP_SIZE.height/2}, ai.pos));
              ai.vel = Utils.add(ai.vel, Utils.mult(toCenter, accel * dt * 60));
              ai.angle = Math.atan2(toCenter.y, toCenter.x);
         } else {
-             ai.vel = Utils.add(ai.vel, Utils.mult(moveDir, accel * dt * 60));
+             ai.vel = Utils.add(ai.vel, Utils.mult({x: Math.cos(ai.angle), y: Math.sin(ai.angle)}, accel * dt * 60));
         }
-        
         return;
     }
 
+    // --- 通用移动逻辑 ---
+    const distToTarget = Utils.dist(ai.pos, target.pos);
+    const moveDir = Utils.normalize(Utils.sub(target.pos, ai.pos));
+    
+    // 默认移动行为
+    let shouldMove = true;
+    let finalMoveDir = moveDir;
+
+    // AI 角色特定逻辑 (保持了原有的判断逻辑，只是 target 变量现在是通过 getNearestEnemy 获取的)
     if (ai.type === CharacterType.CAT) {
-        // Cat AI Strategy
-        const distToTarget = Utils.dist(ai.pos, target.pos);
-        const moveDir = Utils.normalize(Utils.sub(target.pos, ai.pos));
-        
         ai.aimAngle = Math.atan2(moveDir.y, moveDir.x);
         ai.angle = ai.aimAngle;
         
-        let speedMult = 1.0;
-        if (ai.slowTimer > 0) speedMult *= 0.4;
-        
-        const canPounce = ai.pounceCooldown <= 0 && !ai.catIsCharging && !ai.isPouncing && ai.disarmTimer <= 0 && ai.silenceTimer <= 0;
-        
-        if (canPounce) {
-            let wantToPounce = false;
-            
-            // 策略 A: 远距离突袭 (Gap Close)
-            if (distToTarget > 350) {
-                if (Math.random() < 0.03) wantToPounce = true; // 每帧 ~3% 概率 (约 0.5秒判定一次)
-            }
-            // 策略 B: 中距离博弈 (Combat Mix-up)
-            else if (distToTarget > 150) {
-                if (Math.random() < 0.01) wantToPounce = true; // 每帧 ~1% 概率 (约 1.5秒判定一次)
-            }
-            // 策略 C: 贴脸不飞扑，直接挠 (Scratch priority)
-            
-            if (wantToPounce) {
-                ai.catIsCharging = true;
-                ai.catChargeStartTime = performance.now();
-            }
-        }
-
-        // 处理蓄力与释放
         if (ai.catIsCharging) {
-            speedMult *= 0.2; // 蓄力减速
-            const chargeTime = (performance.now() - (ai.catChargeStartTime || 0)) / 1000;
-            
-            const desiredChargeTime = distToTarget > 300 ? 0.8 + Math.random() * 0.2 : 0.4 + Math.random() * 0.2;
-            
-            if (chargeTime > desiredChargeTime) {
+            // 蓄力超过 0.6s 则释放
+            if ((performance.now() - (ai.catChargeStartTime || 0)) / 1000 > 0.6) {
                 ai.catIsCharging = false;
-                handleCatPounce(ai, chargeTime);
+                handleCatPounce(ai, 0.6);
             }
-        } 
-        else {
-            if (ai.pounceCooldown > 0.5 && distToTarget < 100) {
-                 const perp = { x: -moveDir.y, y: moveDir.x };
-                 const retreatDir = Utils.sub(Utils.mult(perp, Math.sin(Date.now()/500)), moveDir); // 螺旋后退
-                 ai.vel = Utils.add(ai.vel, Utils.mult(Utils.normalize(retreatDir), PHYSICS.ACCELERATION_SPEED * CHAR_STATS[CharacterType.CAT].speed * 0.8 * dt * 60));
-            } else {
-                 const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[CharacterType.CAT].speed * speedMult;
-                 ai.vel = Utils.add(ai.vel, Utils.mult(moveDir, accel * dt * 60));
-            }
-
-            if (distToTarget < CHAR_STATS[CharacterType.CAT].scratchRange + 20) {
-                handleCatScratch(ai);
-            }
-            if (ai.secondarySkillCooldown <= 0 && Math.random() < 0.02) handleCatHiss(ai);
-            if (ai.skillCooldown <= 0 && Math.random() < 0.01) handleCatScooper(ai);
-        }
-    }
-    else if (ai.type === CharacterType.WUKONG) {
-        // --- AI Target Selection Strategy ---
-        // 1. Is enemy player dead? Target Drones.
-        // 2. Is enemy player very far (> 700)? Check if Drones are close.
-        let actualTarget = target;
-        let targetingSummon = false;
-
-        if (target.isDead) {
-             // Find nearest drone
-             let minDist = 9999;
-             stateRef.current.drones.forEach(d => {
-                 if (d.ownerId !== ai.id && d.hp > 0 && !d.isDocked) {
-                     const dist = Utils.dist(ai.pos, d.pos);
-                     if (dist < minDist) {
-                         minDist = dist;
-                         actualTarget = d as any; // Temporary cast to match PlayerState interface for pos/radius
-                         targetingSummon = true;
-                     }
-                 }
-             });
         } else {
-             const distToPlayer = Utils.dist(ai.pos, target.pos);
-             if (distToPlayer > 700) {
-                 // Player far away, check for closer juicy targets
-                 let minDist = 9999;
-                 let bestDrone = null;
-                 stateRef.current.drones.forEach(d => {
-                     if (d.ownerId !== ai.id && d.hp > 0 && !d.isDocked) {
-                         const dist = Utils.dist(ai.pos, d.pos);
-                         if (dist < 500 && dist < minDist) { // Prioritize drones closer than 500
-                             minDist = dist;
-                             bestDrone = d;
-                         }
-                     }
-                 });
-                 if (bestDrone) {
-                     actualTarget = bestDrone as any;
-                     targetingSummon = true;
-                 }
+             // 随机尝试蓄力
+             if (distToTarget > 150 && Math.random() < 0.01 && ai.pounceCooldown <= 0) {
+                 ai.catIsCharging = true;
+                 ai.catChargeStartTime = performance.now();
              }
+             // 近身攻击
+             if (distToTarget < CHAR_STATS.CAT.scratchRange + 20) handleCatScratch(ai);
+             // 技能释放
+             if (ai.secondarySkillCooldown <= 0 && Math.random() < 0.02 && distToTarget < 200) handleCatHiss(ai);
+             if (ai.skillCooldown <= 0 && Math.random() < 0.01) handleCatScooper(ai);
         }
-        
-        const distToTarget = Utils.dist(ai.pos, actualTarget.pos);
-        const moveDir = Utils.normalize(Utils.sub(actualTarget.pos, ai.pos));
-        
-        // --- MOVEMENT LOGIC FIX ---
-        // AI must respect Charge State (Root/Slow) and Slow Status
-        let speedMult = 1.0;
-        if (ai.slowTimer > 0) speedMult *= 0.4;
-        
-        if (ai.wukongChargeState === 'SMASH') speedMult = 0; // Rooted
-        else if (ai.wukongChargeState === 'THRUST') speedMult *= 0.3; // Slowed
-
-        if (speedMult > 0) {
-            let accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[CharacterType.WUKONG].speed * speedMult;
-            ai.vel = Utils.add(ai.vel, Utils.mult(moveDir, accel * dt * 60));
-        }
-
-        const aimDir = Utils.sub(actualTarget.pos, ai.pos);
-        ai.aimAngle = Math.atan2(aimDir.y, aimDir.x);
-        ai.angle = ai.aimAngle;
-        
-        // Attack Logic
-        if (distToTarget < 150 && ai.attackCooldown <= 0) {
-            handleWukongCombo(ai);
-        }
-        
-        // Use Smash Skill
-        if (ai.skillCooldown <= 0 && ai.wukongChargeState === 'NONE') {
+    } 
+    else if (ai.type === CharacterType.WUKONG) {
+         ai.aimAngle = Math.atan2(moveDir.y, moveDir.x);
+         ai.angle = ai.aimAngle;
+         
+         if (distToTarget < 150 && ai.attackCooldown <= 0) handleWukongCombo(ai);
+         
+         if (distToTarget > 150 && distToTarget < 300 && ai.wukongChargeState === 'NONE' && ai.skillCooldown > 0) {
+             ai.wukongChargeState = 'THRUST'; ai.wukongMaxCharge = 0.8; ai.wukongChargeTime = 0;
+         }
+         
+         if (ai.wukongChargeState !== 'NONE') {
+            ai.wukongChargeTime += dt;
+            if (ai.wukongChargeTime >= ai.wukongMaxCharge) {
+                ai.wukongChargeTime = ai.wukongMaxCharge;
+                if (ai.wukongChargeState === 'THRUST') releaseWukongThrust(ai);
+                else if (ai.wukongChargeState === 'SMASH') {
+                    // AI also respects hold limit
+                    ai.wukongChargeHoldTimer += dt;
+                    if (ai.wukongChargeHoldTimer >= 1.0) releaseWukongSmash(ai);
+                }
+            }
+         }
+         
+         // 悟空的 Smash 大招逻辑 (原代码中有，补上)
+         if (ai.skillCooldown <= 0 && ai.wukongChargeState === 'NONE') {
             let wantSmash = false;
             let chargeTime = 1.5;
 
@@ -1985,14 +1988,14 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                 const hasWall = obstacles.some(obs => {
                     if (obs.type !== 'WALL') return false;
                     const center = {x: obs.x + obs.width/2, y: obs.y + obs.height/2};
-                    const d = Utils.distToSegment(center, ai.pos, actualTarget.pos);
+                    const d = Utils.distToSegment(center, ai.pos, target.pos);
                     const size = Math.max(obs.width, obs.height) / 2;
                     return d < size + 20;
                 });
                 
                 if (hasWall) {
                     wantSmash = true;
-                    chargeTime = 1.5; // 满蓄力以确保最大破坏和距离
+                    chargeTime = 1.5; 
                 }
             }
 
@@ -2010,30 +2013,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                 ai.wukongChargeHoldTimer = 0;
             }
         }
-
-        // Use Thrust if cooldown available and range appropriate (simple AI logic)
-        if (distToTarget > 150 && distToTarget < 300 && ai.wukongThrustTimer <= 0 && ai.wukongChargeState === 'NONE' && ai.skillCooldown > 0) {
-             ai.wukongChargeState = 'THRUST';
-             ai.wukongMaxCharge = 0.8;
-             ai.wukongChargeTime = 0;
-        }
-        
-        if (ai.wukongChargeState !== 'NONE') {
-            ai.wukongChargeTime += dt;
-            if (ai.wukongChargeTime >= ai.wukongMaxCharge) {
-                ai.wukongChargeTime = ai.wukongMaxCharge;
-                if (ai.wukongChargeState === 'SMASH') {
-                    // AI also respects hold limit
-                    ai.wukongChargeHoldTimer += dt;
-                    if (ai.wukongChargeHoldTimer >= 1.0) releaseWukongSmash(ai);
-                } else {
-                    releaseWukongThrust(ai);
-                }
-            }
-        }
-    }
+    } 
     else if (ai.type === CharacterType.PYRO) {
-        // Stuck Detection
+        // 卡住检测 (保留原有的)
         if (!ai.lastPos) ai.lastPos = ai.pos;
         const distMoved = Utils.dist(ai.pos, ai.lastPos);
         ai.lastPos = ai.pos;
@@ -2041,213 +2023,142 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
         else ai.stuckTimer = Math.max(0, (ai.stuckTimer || 0) - dt);
 
         if ((ai.stuckTimer || 0) > 1.5 && (ai.unstuckTimer || 0) <= 0) {
-        ai.unstuckTimer = 1.0;
-        const randAngle = Math.random() * Math.PI * 2;
-        ai.unstuckDir = { x: Math.cos(randAngle), y: Math.sin(randAngle) };
-        ai.stuckTimer = 0;
+            ai.unstuckTimer = 1.0;
+            const randAngle = Math.random() * Math.PI * 2;
+            ai.unstuckDir = { x: Math.cos(randAngle), y: Math.sin(randAngle) };
+            ai.stuckTimer = 0;
         }
         if ((ai.unstuckTimer || 0) > 0) {
-        ai.unstuckTimer! -= dt;
-        const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[ai.type].speed;
-        ai.vel = Utils.add(ai.vel, Utils.mult(ai.unstuckDir!, accel * dt * 60));
-        return; 
+            ai.unstuckTimer! -= dt; // 修正 TypeScript 可能的非空断言
+            const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[ai.type].speed;
+            ai.vel = Utils.add(ai.vel, Utils.mult(ai.unstuckDir!, accel * dt * 60));
+            return; 
         }
 
-        const distToTarget = Utils.dist(ai.pos, target.pos);
-
+        // 重新计算瞄准
         const { range: aiRange, angle: aiAngle } = calculatePyroShape(distToTarget);
         ai.currentWeaponRange = aiRange;
         ai.currentWeaponAngle = aiAngle;
-
-        const aimDir = Utils.sub(target.pos, ai.pos);
-        const targetAimAngle = Math.atan2(aimDir.y, aimDir.x);
         
-        ai.aimAngle = targetAimAngle; 
+        ai.aimAngle = Math.atan2(moveDir.y, moveDir.x);
         
-        let moveVec = { x: 0, y: 0 };
+        // 移动微调 (保持一定距离)
         const range = CHAR_STATS[CharacterType.PYRO].flamethrowerRange;
         const idealRange = range * 0.9;
         
         if (distToTarget > idealRange) {
-            moveVec = Utils.normalize(aimDir);
+            finalMoveDir = Utils.normalize(moveDir);
         } else {
-            const perp = { x: -aimDir.y, y: aimDir.x };
+            // 侧向移动
+            const perp = { x: -moveDir.y, y: moveDir.x };
             const strafeDir = Utils.normalize(perp);
             const strafeFactor = Math.sin(Date.now() / 800);
-            moveVec = Utils.add(Utils.mult(Utils.normalize(aimDir), 0.1), Utils.mult(strafeDir, strafeFactor));
+            finalMoveDir = Utils.add(Utils.mult(Utils.normalize(moveDir), 0.1), Utils.mult(strafeDir, strafeFactor));
         }
-        
+
+        // 攻击爆发控制
         if (ai.burstTimer === undefined) ai.burstTimer = 0;
         if (ai.burstTimer > 0) ai.burstTimer -= dt;
 
         const inRange = distToTarget < range + 20;
-
         if (inRange && ai.burstTimer <= 0 && !ai.isOverheated) {
             ai.burstTimer = 1.0 + Math.random() * 0.5;
         }
         
         const shouldFire = (inRange || ai.burstTimer > 0) && !ai.isOverheated;
 
+        // 攻击逻辑
         if (shouldFire) {
             ai.isFiringFlamethrower = true;
-            ai.heat += CHAR_STATS[CharacterType.PYRO].heatGen * dt;
-            if (ai.heat >= ai.maxHeat) {
-                ai.heat = ai.maxHeat;
-                ai.isOverheated = true;
-                ai.burstTimer = 0; 
-                Sound.playOverheat();
-                spawnParticles(ai.pos, 15, '#ffffff', 5, 0.5); 
-            }
+            ai.heat += CHAR_STATS.PYRO.heatGen * dt;
+            if (ai.heat >= ai.maxHeat) { ai.heat = ai.maxHeat; ai.isOverheated = true; ai.burstTimer = 0; Sound.playOverheat(); spawnParticles(ai.pos, 15, '#ffffff', 5, 0.5); }
             fireFlamethrower(ai, dt);
         } else {
             ai.isFiringFlamethrower = false;
         }
         
-        // Skill usage
+        // 技能逻辑
         if (ai.skillCooldown <= 0 && distToTarget < 300) {
             Sound.playSkill('MAGMA');
             castMagmaPool(ai, target.pos);
         }
         
-        // AI Detonate Logic: Strategic decision
-        const pools = stateRef.current.groundEffects.filter(g => g.type === 'MAGMA_POOL');
-        if (pools.length > 0) {
-            let score = 0;
-            // Blast radius is 200 + target radius.
-            // But we use a conservative check for AI planning.
-            const blastRadius = 200 + target.radius; 
-            const poolRadius = 95; // From constants
-
-            for(const pool of pools) {
-                 const distToEnemy = Utils.dist(pool.pos, target.pos);
-                 const distToSelf = Utils.dist(pool.pos, ai.pos);
-                 
-                 const enemyInBlast = distToEnemy < blastRadius;
-                 const enemyInPool = distToEnemy < poolRadius;
-                 const selfInPool = distToSelf < poolRadius;
-                 
-                 // Positive: Hit Enemy
-                 if (enemyInBlast) {
-                     score += 2; // Base Hit value
-                     if (target.hp < 250) score += 8; // Execution value (Burst is ~150 + Burn)
-                     
-                     if (enemyInPool) {
-                         // Negative: Enemy already suffering DOT
-                         score -= 4;
-                         
-                         // Exception: Enemy Leaving
-                         // If distance > 70% of radius, they are likely leaving
-                         if (distToEnemy > poolRadius * 0.7) {
-                             score += 6; // Catch them before they leave
-                         }
-                     }
-                 }
-                 
-                 // Negative: Self Harm / Opportunity Cost
-                 if (selfInPool) {
-                     // If AI is hurt, prioritize healing
-                     if (ai.hp < ai.maxHp * 0.8) score -= 6;
-                 }
-            }
-            
-            // Probabilistic Execution
-            let probability = 0;
-            if (score >= 6) probability = 0.4;       // Very High priority
-            else if (score >= 2) probability = 0.05; // Beneficial
-            else if (score > 0) probability = 0.01;  // Whim
-            
-            if (Math.random() < probability) {
+        // [新增] AI 智能引爆岩浆
+        const myPools = stateRef.current.groundEffects.filter(g => g.type === 'MAGMA_POOL' && g.ownerId === ai.id);
+        if (myPools.length > 0) {
+            // 简单判断：如果敌人踩在我的岩浆上，且我有引爆CD，概率引爆
+            const enemyInPool = myPools.some(pool => Utils.dist(pool.pos, target.pos) < 95);
+            if (enemyInPool && ai.secondarySkillCooldown <= 0 && Math.random() < 0.05) {
                 detonateMagmaPools(ai);
             }
         }
+    } 
+    else if (ai.type === CharacterType.TANK) {
+         // 炮塔转动逻辑
+         const diff = Math.atan2(moveDir.y, moveDir.x) - ai.aimAngle;
+         const d = Math.atan2(Math.sin(diff), Math.cos(diff));
+         ai.aimAngle += Utils.clamp(d, -CHAR_STATS.TANK.turretSpeed * dt * 60, CHAR_STATS.TANK.turretSpeed * dt * 60);
+         
+         // 移动微调 (坦克保持距离)
+         const optimalRange = ai.tankMode === TankMode.ARTILLERY ? 500 : 300;
+         if (distToTarget < optimalRange - 50) {
+             finalMoveDir = Utils.mult(Utils.normalize(moveDir), -1); 
+         } else if (distToTarget > optimalRange + 50) {
+             finalMoveDir = Utils.normalize(moveDir); 
+         } else {
+             const perp = { x: -moveDir.y, y: moveDir.x };
+             finalMoveDir = Utils.mult(Utils.normalize(perp), Math.sin(Date.now() / 2000) * 0.5);
+         }
 
-        if (moveVec.x !== 0 || moveVec.y !== 0) {
-            moveVec = Utils.normalize(moveVec);
-            // Apply Slow Logic
-            let speedMult = 1.0;
-            if (ai.slowTimer > 0) speedMult *= 0.4;
-            
-            const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[ai.type].speed * speedMult;
-            ai.vel = Utils.add(ai.vel, Utils.mult(moveVec, accel * dt * 60));
-            ai.angle = Math.atan2(moveVec.y, moveVec.x);
-        }
-    } else if (ai.type === CharacterType.TANK) {
-        // TANK AI
-        const distToTarget = Utils.dist(ai.pos, target.pos);
-        const aimDir = Utils.sub(target.pos, ai.pos);
-        const targetAimAngle = Math.atan2(aimDir.y, aimDir.x);
+         // 切换形态逻辑
+         if (distToTarget > 500 && ai.tankMode === TankMode.LMG) { ai.tankMode = TankMode.ARTILLERY; ai.skillCooldown = 1; ai.attackCooldown = 1.5; Sound.playSkill('SWITCH'); }
+         if (distToTarget < 300 && ai.tankMode === TankMode.ARTILLERY) { ai.tankMode = TankMode.LMG; ai.skillCooldown = 1; ai.attackCooldown = 1.5; Sound.playSkill('SWITCH'); }
+
+         // 开火逻辑
+         if (ai.attackCooldown <= 0 && Math.abs(d) < 0.3) {
+             if (ai.tankMode === TankMode.ARTILLERY) {
+                 if (ai.artilleryAmmo > 0 && distToTarget > CHAR_STATS.TANK.artilleryMinRange) {
+                    fireArtillery(ai, target.pos); ai.artilleryAmmo--; ai.attackCooldown = 3.5;
+                 }
+             } else {
+                 if (ai.lmgAmmo > 0) {
+                    fireLMG(ai); ai.lmgAmmo--; ai.attackCooldown = 0.1;
+                    if (ai.lmgAmmo <= 0) { ai.lmgAmmo = 0; ai.isReloadingLmg = true; ai.lmgReloadTimer = 0; }
+                 } else {
+                    // AI 自动装弹逻辑简化
+                    ai.lmgAmmo = ai.maxLmgAmmo; ai.attackCooldown = 2.0;
+                 }
+             }
+         }
+         // 无人机逻辑
+         if (ai.droneState === 'READY' && distToTarget < 600) deployDrone(ai);
+    }
+
+    // --- 应用速度 ---
+    if (shouldMove) {
+        let speedMult = 1.0;
+        if (ai.slowTimer > 0) speedMult *= 0.4;
         
-        const diff = targetAimAngle - ai.aimAngle;
-        const d = Math.atan2(Math.sin(diff), Math.cos(diff));
-        const rotSpeed = CHAR_STATS[CharacterType.TANK].turretSpeed;
-        const change = Utils.clamp(d, -rotSpeed * dt * 60, rotSpeed * dt * 60);
-        ai.aimAngle += change;
-
-        const optimalRange = ai.tankMode === TankMode.ARTILLERY ? 500 : 300;
-        let moveVec = {x:0, y:0};
-        if (distToTarget < optimalRange - 50) {
-            moveVec = Utils.mult(Utils.normalize(aimDir), -1); 
-        } else if (distToTarget > optimalRange + 50) {
-            moveVec = Utils.normalize(aimDir); 
-        } else {
-            const perp = { x: -aimDir.y, y: aimDir.x };
-            moveVec = Utils.mult(Utils.normalize(perp), Math.sin(Date.now() / 2000) * 0.5);
+        // 角色特定减速
+        if (ai.type === CharacterType.TANK && ai.tankMode === TankMode.LMG) speedMult = 1.6;
+        if (ai.type === CharacterType.CAT && ai.catIsCharging) {
+             const chargeDuration = (performance.now() - (ai.catChargeStartTime || 0)) / 1000;
+             if (chargeDuration > 0.3) speedMult *= 0.2;
         }
+        if (ai.type === CharacterType.WUKONG && ai.wukongChargeState === 'SMASH') speedMult = 0;
+        else if (ai.type === CharacterType.WUKONG && ai.wukongChargeState === 'THRUST') speedMult *= 0.3;
 
-        if (distToTarget < 250 && ai.tankMode === TankMode.ARTILLERY && ai.skillCooldown <= 0) {
-            ai.tankMode = TankMode.LMG;
-            ai.skillCooldown = 1;
-            ai.attackCooldown = 1.5; 
-            Sound.playSkill('SWITCH');
-        } else if (distToTarget > 450 && ai.tankMode === TankMode.LMG && ai.skillCooldown <= 0) {
-            ai.tankMode = TankMode.ARTILLERY;
-            ai.skillCooldown = 1;
-            ai.attackCooldown = 1.5; 
-            Sound.playSkill('SWITCH');
-        }
-
-        if (ai.attackCooldown <= 0) {
-            let isAligned = true;
-            const diff = targetAimAngle - ai.aimAngle;
-            const angleDist = Math.abs(Math.atan2(Math.sin(diff), Math.cos(diff)));
-            if (angleDist > 0.2) isAligned = false; 
-
-            if (isAligned) {
-                if (ai.tankMode === TankMode.ARTILLERY && ai.artilleryAmmo >= 1 && distToTarget > CHAR_STATS[CharacterType.TANK].artilleryMinRange) {
-                    fireArtillery(ai, target.pos);
-                    ai.artilleryAmmo -= 1;
-                    ai.attackCooldown = 3.5; 
-                } else if (ai.tankMode === TankMode.LMG) {
-                    if (!ai.isReloadingLmg && ai.lmgAmmo >= 1) {
-                        fireLMG(ai);
-                        ai.lmgAmmo -= 1;
-                        ai.attackCooldown = 0.1;
-                        if (ai.lmgAmmo <= 0) {
-                            ai.lmgAmmo = 0;
-                            ai.isReloadingLmg = true;
-                            ai.lmgReloadTimer = 0;
-                        }
-                    }
-                }
-            }
-        }
-
-        // TANK Drone AI logic
-        if (ai.droneState === 'READY' && distToTarget < 600 && !target.isDead) {
-            deployDrone(ai);
-        }
+        const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[ai.type].speed * speedMult;
         
-        if (moveVec.x !== 0 || moveVec.y !== 0) {
-            moveVec = Utils.normalize(moveVec);
-            let speedMult = 1.0;
-            // Tank specific speeds
-            if (ai.tankMode === TankMode.LMG) speedMult = 1.6;
-            if (ai.slowTimer > 0) speedMult *= 0.4;
+        // 坦克移动较慢
+        let finalAccel = accel;
+        if (ai.type === CharacterType.TANK) finalAccel *= 0.8;
 
-            let accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[ai.type].speed * speedMult;
-            if (ai.type === CharacterType.TANK) accel *= 0.8;
-            ai.vel = Utils.add(ai.vel, Utils.mult(moveVec, accel * dt * 60));
-            ai.angle = Math.atan2(moveVec.y, moveVec.x);
+        ai.vel = Utils.add(ai.vel, Utils.mult(finalMoveDir, finalAccel * dt * 60));
+        
+        // 除了坦克和猫扑，其他角色转身
+        if (ai.type !== CharacterType.CAT || !ai.isPouncing) {
+             ai.angle = Math.atan2(finalMoveDir.y, finalMoveDir.x);
         }
     }
   };
@@ -2320,11 +2231,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
         });
     }
 
-    const enemies = p.id === 'player' ? [stateRef.current.enemy] : [stateRef.current.player];
-    // Add Drones to enemies list
-    stateRef.current.drones.forEach(d => {
-        if (d.ownerId !== p.id && d.hp > 0 && !d.isDocked) enemies.push(d as any);
-    });
+    // [修改核心] 使用 getEnemies 获取所有敌对目标（包括玩家和无人机）
+    const enemies = getEnemies(p);
 
     // Hit Logic
     enemies.forEach(e => {
@@ -2338,6 +2246,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
          if (Math.abs(normalizedDiff) < cone) {
               if ('isSummon' in e) {
                   e.hp -= 350 * dt;
+                  if (e.hp <= 0) killEntity(e, p.id); // [新增] 召唤物死亡处理
                   if (Math.random() < 0.2) spawnParticles(e.pos, 1, '#ef4444', 2, 0.5);
               } else {
                   e.flameExposure = Math.min(100, e.flameExposure + 2); 
@@ -2436,14 +2345,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
        p.pos = Utils.add(p.pos, Utils.mult(p.vel, dt * 60));
        p.life -= dt;
        
+       // --- 粒子特效 (保持原样) ---
        if (p.projectileType === 'MAGMA_PROJ') {
            if (Math.random() < 0.6) {
               state.particles.push({
-                 id: Math.random().toString(),
-                 pos: { ...p.pos },
+                 id: Math.random().toString(), pos: { ...p.pos },
                  vel: Utils.mult(Utils.normalize(p.vel), -2), 
-                 life: 0.3 + Math.random() * 0.2,
-                 maxLife: 0.5,
+                 life: 0.3 + Math.random() * 0.2, maxLife: 0.5,
                  color: Math.random() > 0.5 ? '#f97316' : '#ef4444', 
                  size: p.radius * (0.5 + Math.random() * 0.3)
               });
@@ -2451,37 +2359,37 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
        } else if (p.projectileType === 'BOMB') {
            if (Math.random() < 0.7) {
               state.particles.push({
-                 id: Math.random().toString(),
-                 pos: { ...p.pos },
+                 id: Math.random().toString(), pos: { ...p.pos },
                  vel: {x: (Math.random()-0.5), y: (Math.random()-0.5)}, 
-                 life: 0.5 + Math.random() * 0.3,
-                 maxLife: 0.8,
+                 life: 0.5 + Math.random() * 0.3, maxLife: 0.8,
                  color: Math.random() > 0.5 ? '#9ca3af' : '#4b5563', 
                  size: p.radius * (0.6 + Math.random() * 0.4)
               });
            }
        }
 
+       // --- 碰撞与逻辑 ---
        if (p.projectileType === 'MAGMA_PROJ') {
           if (p.life <= 0) {
               state.groundEffects.push({
-                  id: Math.random().toString(),
-                  pos: p.pos,
-                  radius: p.aoeRadius || 80,
-                  life: 5,
-                  maxLife: 5,
-                  type: 'MAGMA_POOL',
-                  ownerId: p.ownerId
+                  id: Math.random().toString(), pos: p.pos, radius: p.aoeRadius || 80,
+                  life: 5, maxLife: 5, type: 'MAGMA_POOL', ownerId: p.ownerId
               });
               createExplosion(state, p.pos, 50, 0, p.ownerId, true); 
           }
        } 
        else if (p.projectileType === 'BOMB') {
-          const players = [state.player, state.enemy];
-          
-          // Check Drones for Bomb hit (direct)
+          // 找到发射者（用于判断阵营）
+          const owner = state.players.find(pl => pl.id === p.ownerId);
+
+          // 1. 检查无人机 (直击)
           state.drones.forEach(d => {
-              if (d.ownerId !== p.ownerId && d.hp > 0 && !d.isDocked && (!p.hitTargets || !p.hitTargets.includes(d.id))) {
+              // 找到无人机的主人
+              const dOwner = state.players.find(pl => pl.id === d.ownerId);
+              // 判定敌对：非自己，且 (无主人 或 主人队伍不同)
+              const isEnemy = d.ownerId !== p.ownerId && (!owner || !dOwner || owner.teamId !== dOwner.teamId);
+
+              if (isEnemy && d.hp > 0 && !d.isDocked && (!p.hitTargets || !p.hitTargets.includes(d.id))) {
                    if (Utils.dist(p.pos, d.pos) < d.radius + p.radius) {
                        d.hp -= p.damage;
                        Sound.playHit();
@@ -2491,22 +2399,22 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                        if (p.isEmp) d.hp = 0;
                        
                        if (d.hp <= 0) {
-                           // Drone Destroyed
-                           createExplosion(state, d.pos, 40, 0, p.ownerId);
-                           const owner = d.ownerId === state.player.id ? state.player : state.enemy;
-                           owner.droneState = 'RECONSTRUCTING';
-                           owner.droneTimer = 0;
-                           owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
+                           killEntity(d, p.ownerId); // 使用统一击杀逻辑
                        }
                    }
               }
           });
 
-          // Check Players
-          players.forEach(target => {
-              if (target.id !== p.ownerId && !target.isDead && (!p.hitTargets || !p.hitTargets.includes(target.id))) {
+          // 2. 检查玩家 (直击)
+          state.players.forEach(target => {
+              // 判定：非自己，非队友，未死亡，未被本次击中过
+              if (target.id !== p.ownerId && !target.isDead && 
+                  (!owner || target.teamId !== owner.teamId) && 
+                  (!p.hitTargets || !p.hitTargets.includes(target.id))) {
+                  
                   if (Utils.dist(p.pos, target.pos) < target.radius + p.radius) {
                       let damageMultiplier = 0.7; 
+                      // 如果目标在最终爆炸范围内，减少直击伤害（避免双倍伤害）
                       if (p.targetPos) {
                           const blastRadius = p.aoeRadius || 120;
                           const distToBlastCenter = Utils.dist(target.pos, p.targetPos);
@@ -2528,12 +2436,14 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
               }
           });
 
+          // 寿命耗尽 -> 爆炸
           if (p.life <= 0) {
              createExplosion(state, p.pos, p.aoeRadius || 120, p.damage, p.ownerId, false);
           }
        } else {
+          // --- 普通子弹 / 无人机子弹 ---
           let hitWall = false;
-          // Drone shots penetrate walls
+          // 无人机子弹穿墙
           if (p.projectileType !== 'DRONE_SHOT') {
               for (const obs of state.obstacles) {
                  if (obs.type === 'WATER') continue;
@@ -2544,26 +2454,39 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
               }
           }
 
-          const targetPlayer = p.ownerId === 'player' ? state.enemy : state.player;
-          
           let hitEntity: any = null;
+          const owner = state.players.find(pl => pl.id === p.ownerId);
           
-          // Check if it hit player
-          if (!targetPlayer.isDead && Utils.dist(p.pos, targetPlayer.pos) < targetPlayer.radius + p.radius) {
-              // Wukong Aerial Immunity check
-              let immune = false;
-              if (targetPlayer.type === CharacterType.WUKONG && targetPlayer.wukongChargeState === 'SMASH') immune = true;
-              
-              if (!immune) hitEntity = targetPlayer;
-          }
+          if (!hitWall) {
+              // 1. 检查撞到玩家
+              for (const pl of state.players) {
+                  // 判定：非自己，非队友，未死亡
+                  if (pl.id !== p.ownerId && (!owner || owner.teamId !== pl.teamId) && !pl.isDead) {
+                      if (Utils.dist(p.pos, pl.pos) < pl.radius + p.radius) {
+                          // 悟空特殊状态免疫
+                          let immune = false;
+                          if (pl.type === CharacterType.WUKONG && pl.wukongChargeState === 'SMASH') immune = true;
+                          
+                          if (!immune) {
+                              hitEntity = pl;
+                              break;
+                          }
+                      }
+                  }
+              }
 
-          // Check if it hit enemy drone
-          if (!hitEntity) {
-              for (const d of state.drones) {
-                  if (d.ownerId !== p.ownerId && d.hp > 0 && !d.isDocked) {
-                      if (Utils.dist(p.pos, d.pos) < d.radius + p.radius) {
-                          hitEntity = d;
-                          break;
+              // 2. 检查撞到无人机 (如果还没撞到人)
+              if (!hitEntity) {
+                  for (const d of state.drones) {
+                      const dOwner = state.players.find(pl => pl.id === d.ownerId);
+                      // 判定：非己方无人机，且存活
+                      const isEnemyDrone = d.ownerId !== p.ownerId && (!owner || !dOwner || owner.teamId !== dOwner.teamId);
+                      
+                      if (isEnemyDrone && d.hp > 0 && !d.isDocked) {
+                          if (Utils.dist(p.pos, d.pos) < d.radius + p.radius) {
+                              hitEntity = d;
+                              break;
+                          }
                       }
                   }
               }
@@ -2576,25 +2499,21 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
              p.life = 0;
              
              if ('isSummon' in hitEntity) {
-                 // Hit Drone
+                 // 命中无人机
                  let dmg = p.damage;
                  if (p.isEmp) dmg = 9999;
                  hitEntity.hp -= dmg;
                  spawnParticles(p.pos, 5, '#6ee7b7');
                  
-                 // Knockback small for drone
+                 // 击退
                  hitEntity.pos = Utils.add(hitEntity.pos, Utils.mult(Utils.normalize(p.vel), 10));
 
                  if (hitEntity.hp <= 0) {
-                      createExplosion(state, hitEntity.pos, 40, 0, p.ownerId);
-                      const owner = hitEntity.ownerId === state.player.id ? state.player : state.enemy;
-                      owner.droneState = 'RECONSTRUCTING';
-                      owner.droneTimer = 0;
-                      owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
+                      killEntity(hitEntity, p.ownerId);
                  }
 
              } else {
-                 // Hit Player
+                 // 命中玩家
                  takeDamage(hitEntity, p.damage);
                  Sound.playHit();
                  
@@ -2602,7 +2521,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
                  let knockbackForce = 160; 
 
                  if (p.projectileType === 'DRONE_SHOT') {
-                    knockbackForce = 300; // Buffed knockback for drone
+                    knockbackForce = 300; 
                  }
                  
                  applyKnockback(hitEntity, pushDir, knockbackForce);
@@ -2614,6 +2533,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
   };
 
   const createExplosion = (state: GameState, pos: Vector2, radius: number, damage: number, ownerId: string, selfImmune: boolean = false) => {
+      // 视觉效果 (保持原样)
       spawnParticles(pos, 30, '#f59e0b', 8, 1);
       Sound.playExplosion();
       
@@ -2627,13 +2547,37 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
          size: radius 
       });
 
-      // Explosion hits Players AND Drones
-      const targets: any[] = [state.player, state.enemy];
-      state.drones.forEach(d => { if(d.hp > 0 && !d.isDocked) targets.push(d); });
+      // [修改核心] 获取所有目标：玩家列表 + 活跃无人机
+      // 替换原有的 [state.player, state.enemy]
+      const targets = [
+          ...state.players, 
+          ...state.drones.filter(d => d.hp > 0 && !d.isDocked)
+      ];
+
+      // 获取爆炸制造者 (用于判断阵营)
+      const owner = state.players.find(p => p.id === ownerId);
 
       targets.forEach(target => {
-         if (selfImmune && (target.id === ownerId || target.ownerId === ownerId)) return;
+         // 基础检查
          if ('isDead' in target && target.isDead) return;
+         if (selfImmune && (target.id === ownerId || ('ownerId' in target && target.ownerId === ownerId))) return;
+
+         // [新增] 队友免伤逻辑 (No Friendly Fire)
+         if (owner) {
+             let targetTeamId = -1;
+             // 如果是玩家，直接取 teamId
+             if ('teamId' in target) {
+                 targetTeamId = target.teamId;
+             } 
+             // 如果是无人机，取主人的 teamId
+             else if ('ownerId' in target) {
+                 const dOwner = state.players.find(p => p.id === target.ownerId);
+                 if (dOwner) targetTeamId = dOwner.teamId;
+             }
+
+             // 如果同队，跳过伤害
+             if (targetTeamId !== -1 && targetTeamId === owner.teamId) return;
+         }
 
          const d = Utils.dist(pos, target.pos);
          if (d < radius + target.radius) {
@@ -2641,17 +2585,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
             const finalDamage = damage * Math.max(0, damageFactor);
             
             if ('isSummon' in target) {
+                // 命中无人机
                 target.hp -= finalDamage;
                 if (target.hp <= 0) {
-                     // Chain reaction? Or just silent removal next frame logic
-                     // Set owner reconstruct logic if not already set
-                     const owner = target.ownerId === state.player.id ? state.player : state.enemy;
-                     owner.droneState = 'RECONSTRUCTING';
-                     owner.droneTimer = 0;
-                     owner.droneMaxTimer = CHAR_STATS[CharacterType.TANK].droneReconstructTime / 1000;
+                     killEntity(target, ownerId); // [修改] 使用统一击杀逻辑
                 }
             } else {
+                // 命中玩家
                 takeDamage(target, finalDamage);
+                
                 const pushDir = Utils.normalize(Utils.sub(target.pos, pos));
                 const baseForce = 10400; 
                 const force = baseForce * damageFactor; 
@@ -2705,9 +2647,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
      if (p.disarmTimer > 0) p.disarmTimer -= dt;
      if (p.silenceTimer > 0) p.silenceTimer -= dt;
      if (p.fearTimer > 0) p.fearTimer -= dt;
-     if (p.paralysisTimer > 0) p.paralysisTimer -= dt;
+     if (p.stunTimer > 0) p.stunTimer -= dt;   
+     if (p.blindTimer > 0) p.blindTimer -= dt; 
+     if (p.tauntTimer > 0) p.tauntTimer -= dt; 
+     if (p.rootTimer > 0) p.rootTimer -= dt; 
+     if (p.sleepTimer > 0) p.sleepTimer -= dt;
 
-     if (p.silenceTimer > 0 || p.paralysisTimer > 0) {
+     if (p.silenceTimer > 0 || p.stunTimer > 0 || p.sleepTimer > 0) {
          // 打断悟空球蓄力
          if (p.wukongChargeState !== 'NONE') {
              p.wukongChargeState = 'NONE';
@@ -2746,16 +2692,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
         
         if (!isMoving) {
             p.idleTimer = (p.idleTimer || 0) + dt;
-            // After 3 seconds of idle, occasionally show zZz
-            if (p.idleTimer > 3.0 && Math.random() < 0.01) { // ~1% chance per frame (~60% per second)
-                 stateRef.current.floatingTexts.push({
-                     id: Math.random().toString(),
-                     pos: {x: p.pos.x + (Math.random()-0.5)*20, y: p.pos.y - 30},
-                     text: "zZz",
-                     color: '#fff',
-                     life: 1.5, maxLife: 1.5, velY: -1
-                 });
-            }
         } else {
             p.idleTimer = 0;
         }
@@ -2873,9 +2809,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
           if (g.type === 'SCOOPER_WARNING') {
               // 1. 追踪逻辑
               if (g.targetId) {
-                  let target: any = state.player.id === g.targetId ? state.player : state.enemy;
+                  // 修复点：先在 players 数组里找
+                  let target: any = state.players.find(p => p.id === g.targetId);
+                  
                   // 如果不是玩家，在无人机里找
-                  if (!target || target.id !== g.targetId) {
+                  if (!target) {
                       target = state.drones.find(d => d.id === g.targetId);
                   }
 
@@ -2922,7 +2860,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, onExit }) => {
               return;
           }
 
-          [state.player, state.enemy].forEach(p => {
+          state.players.forEach(p => {
              if (Utils.dist(p.pos, g.pos) < g.radius + p.radius) {
                  if (g.type === 'MAGMA_POOL') {
                      if (p.id === g.ownerId) {
@@ -2974,7 +2912,7 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
           return true; // 保留未命中的障碍物
       });
 
-      const targets: any[] = [state.player, state.enemy, ...state.drones.filter(d => d.hp > 0 && !d.isDocked)];
+      const targets: any[] = [...state.players, ...state.drones.filter(d => d.hp > 0 && !d.isDocked)];
       const damage = CHAR_STATS[CharacterType.CAT].scoopDamage;
 
       targets.forEach(t => {
@@ -2992,21 +2930,12 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
               if ('isSummon' in t) {
                   t.hp -= finalDamage; // 无人机受到衰减后的伤害
                   if (t.hp <= 0) {
-                       createExplosion(state, t.pos, 40, 0, ownerId);
-                       if (t.ownerId) {
-                           const owner = t.ownerId === state.player.id ? state.player : state.enemy;
-                           owner.droneState = 'RECONSTRUCTING';
-                           owner.droneTimer = 0;
-                           owner.droneMaxTimer = 30;
-                       }
+                       killEntity(t, ownerId);
                   }
               } else {
                   takeDamage(t, finalDamage); // 玩家受到衰减后的伤害
-                  t.paralysisTimer = 2.0;                    
-                  state.floatingTexts.push({
-                      id: Math.random().toString(), pos: {x: t.pos.x, y: t.pos.y-60},
-                      text: "拍扁!", color: '#ef4444', life: 1.5, maxLife: 1.5, velY: -1
-                  });
+                  t.stunTimer = 2.0;
+                  t.statusLabel = "拍扁!";                  
               }
               spawnParticles(t.pos, 20, '#b91c1c', 8);
           }
@@ -3052,8 +2981,9 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
     const cx = innerWidth / 2;
     const cy = innerHeight / 2;
 
-    let targetX = state.player.pos.x - cx;
-    let targetY = state.player.pos.y - cy;
+    const human = getHumanPlayer();
+    let targetX = human.pos.x - cx; 
+    let targetY = human.pos.y - cy;
 
     const mouseX = mouseRef.current.x;
     const mouseY = mouseRef.current.y;
@@ -3087,7 +3017,6 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
         stateRef.current['imageCache'][src] = img;
         return img;
     };
-
 
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, width, height);
@@ -3229,7 +3158,12 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
         // Hover animation
         ctx.translate(0, Math.sin(Date.now()/100) * 3);
 
-        if (d.ownerId !== state.player.id) {
+        const human = getHumanPlayer();
+        // 判定敌对显示红光：非自己所有，且其主人与自己非同队
+        const owner = state.players.find(p => p.id === d.ownerId);
+        const isEnemyDrone = d.ownerId !== human.id && (!owner || owner.teamId !== human.teamId);
+
+        if (isEnemyDrone) {
             ctx.shadowColor = '#ef4444'; // 红色光晕
             ctx.shadowBlur = 15;         // 发光强度
         }
@@ -3286,8 +3220,10 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
        ctx.fill();
     });
 
-    // Players
-    [state.player, state.enemy].forEach(p => {
+    // [修改核心] 遍历所有玩家进行绘制
+    // 替换原有的 [state.player, state.enemy].forEach
+    const human = getHumanPlayer();
+    state.players.forEach(p => {
        if (p.isDead) return; 
 
        // Shadow (Dynamic for Wukong Jump)
@@ -3332,9 +3268,13 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
        ctx.save();
        ctx.translate(p.pos.x, p.pos.y);
 
-       if (p.id !== state.player.id) {
-           ctx.shadowColor = '#ef4444'; // 红色光晕
-           ctx.shadowBlur = 20;         // 发光强度 (比无人机更强)
+       // [新增] 阵营高亮逻辑
+       if (p.teamId !== human.teamId) {
+           ctx.shadowColor = '#ef4444'; // 敌对红色光晕
+           ctx.shadowBlur = 20;         
+       } else if (p.id !== human.id) {
+           ctx.shadowColor = '#3b82f6'; // 队友蓝色光晕
+           ctx.shadowBlur = 15;
        }
 
        // 视觉形变逻辑
@@ -3746,15 +3686,19 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
     });
 
     state.floatingTexts.forEach(t => {
+        const alpha = Math.max(0, t.life / t.maxLife);
+        if (alpha < 0.01) return;
+        ctx.save();
+        ctx.globalAlpha = alpha;
         ctx.fillStyle = t.color;
-        ctx.globalAlpha = t.life / t.maxLife;
+        ctx.shadowBlur = 0; 
         ctx.font = 'bold 16px sans-serif';
         ctx.fillText(t.text, t.pos.x - 20, t.pos.y);
-        ctx.globalAlpha = 1;
+        ctx.restore();
     });
     
-    // Draw Aim Guides
-    const p = state.player;
+    // Draw Aim Guides (仅人类玩家显示)
+    const p = getHumanPlayer();
     if (!p.isDead) {
         if (p.type === CharacterType.PYRO) {
             const range = p.currentWeaponRange || CHAR_STATS[CharacterType.PYRO].flamethrowerRange;
@@ -3800,9 +3744,9 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
         } else if (p.type === CharacterType.TANK && p.tankMode === TankMode.ARTILLERY) {
             const aimX = mouseRef.current.x + state.camera.x;
             const aimY = mouseRef.current.y + state.camera.y;
-            const distToTarget = Utils.dist(p.pos, {x: aimX, y: aimY});
+            const dist = Utils.dist(p.pos, {x: aimX, y: aimY});
             const minRange = CHAR_STATS[CharacterType.TANK].artilleryMinRange;
-            const isValid = distToTarget > minRange;
+            const isValid = dist > minRange;
 
             ctx.strokeStyle = isValid ? '#10b981' : '#ef4444'; 
             ctx.lineWidth = 2;
@@ -3857,13 +3801,15 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
             ctx.save();
             ctx.translate(p.pos.x, p.pos.y);
             ctx.rotate(p.aimAngle);
+
+            const currentChargeTime = p.catIsCharging ? (performance.now() - (p.catChargeStartTime || 0)) / 1000 : 0;
             
             // Pounce Arrow
-            if (p.catIsCharging) {
-                 const chargeTime = (performance.now() - (p.catChargeStartTime || 0)) / 1000;
-                 const chargePct = Math.min(1, chargeTime / CHAR_STATS[CharacterType.CAT].pounceMaxCharge);
-                 const maxDist = 280; 
-                 const length = 50 + maxDist * chargePct; // 50 base + charge
+            if (p.catIsCharging && currentChargeTime > 0.15) {
+                 const chargePct = Math.min(1, currentChargeTime / CHAR_STATS[CharacterType.CAT].pounceMaxCharge);
+                 const baseLen = 120; 
+                 const addLen = 120;
+                 const length = baseLen + addLen * chargePct; 
                  
                  ctx.strokeStyle = `rgba(251, 191, 36, ${0.4 + chargePct*0.6})`;
                  ctx.lineWidth = 3 + chargePct * 3;
@@ -3886,8 +3832,8 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
 
     ctx.restore();
 
-    // Health Bars
-    [state.player, state.enemy].forEach(p => {
+    // Health Bars (遍历所有玩家)
+    state.players.forEach(p => {
        if (p.isDead) return;
 
        const barW = 60;
@@ -3900,7 +3846,14 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
        
        const hpPct = p.hp / p.maxHp;
        if (hpPct > 0) {
-         ctx.fillStyle = '#10b981';
+         // 根据队伍 ID 决定颜色
+         if (p.id === human.id) {
+             ctx.fillStyle = '#10b981'; // 绿色 (自己)
+         } else if (p.teamId === human.teamId) {
+             ctx.fillStyle = '#3b82f6'; // 蓝色 (队友)
+         } else {
+             ctx.fillStyle = '#f59e0b'; // 黄/红色 (敌人)
+         }
          ctx.fillRect(barX, barY, Math.round(barW * hpPct), barH);
        }
        
@@ -3935,35 +3888,54 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
       update(dt);
       
       const st = stateRef.current;
-      
+      // [修改] 获取本地玩家对象 (替换 st.player)
+      const human = getHumanPlayer();
+      if (!human) return; 
+
+      // 1. 更新玩家血条
       if (playerHpBarRef.current && playerHpTextRef.current) {
-          const hpPct = (st.player.hp / st.player.maxHp) * 100;
+          const hpPct = (human.hp / human.maxHp) * 100;
           playerHpBarRef.current.style.width = `${Math.max(0, hpPct)}%`;
-          playerHpTextRef.current.textContent = `${st.player.hp.toFixed(0)} HP`;
+          playerHpTextRef.current.textContent = `${human.hp.toFixed(0)} HP`;
       }
       
-      if (heatBarRef.current && heatTextRef.current && st.player.type === CharacterType.PYRO) {
-          const heatPct = (st.player.heat / st.player.maxHeat) * 100;
+      // 2. 更新热能条 (Pyro)
+      if (heatBarRef.current && heatTextRef.current && human.type === CharacterType.PYRO) {
+          const heatPct = (human.heat / human.maxHeat) * 100;
           heatBarRef.current.style.width = `${Math.min(100, Math.max(0, heatPct))}%`;
-          heatTextRef.current.textContent = `${st.player.heat.toFixed(0)}%`;
+          heatTextRef.current.textContent = `${human.heat.toFixed(0)}%`;
       }
       
+      // 3. [修改] 更新敌人血条 (动态显示最近的敌人)
+      const nearestEnemy = getNearestEnemy(human);
       if (enemyHpBarRef.current && enemyHpTextRef.current) {
-          const ehpPct = (st.enemy.hp / st.enemy.maxHp) * 100;
-          enemyHpBarRef.current.style.width = `${Math.max(0, ehpPct)}%`;
-          enemyHpTextRef.current.textContent = `${st.enemy.hp.toFixed(0)} / ${st.enemy.maxHp}`;
+          if (nearestEnemy) {
+              // 有敌人时显示
+              if (enemyHpBarRef.current.parentElement) enemyHpBarRef.current.parentElement.style.opacity = '1';
+              
+              const ehpPct = (nearestEnemy.hp / nearestEnemy.maxHp) * 100;
+              enemyHpBarRef.current.style.width = `${Math.max(0, ehpPct)}%`;
+              
+              const dist = Math.round(Utils.dist(human.pos, nearestEnemy.pos));
+              enemyHpTextRef.current.textContent = `${nearestEnemy.type} (距离: ${dist})`;
+          } else {
+              // 无敌人时隐藏
+              if (enemyHpBarRef.current.parentElement) enemyHpBarRef.current.parentElement.style.opacity = '0';
+          }
       }
 
-      if (radarPivotRef.current && st.player.type === CharacterType.TANK && !st.enemy.isDead) {
-          const dx = st.enemy.pos.x - st.player.pos.x;
-          const dy = st.enemy.pos.y - st.player.pos.y;
+      // 4. 雷达 (Tank) - 指向最近敌人
+      if (radarPivotRef.current && human.type === CharacterType.TANK && nearestEnemy) {
+          const dx = nearestEnemy.pos.x - human.pos.x;
+          const dy = nearestEnemy.pos.y - human.pos.y;
           const angle = Math.atan2(dy, dx);
           radarPivotRef.current.style.transform = `rotate(${angle}rad)`;
       }
 
+      // 5. 技能冷却遮罩
       if (skillCdOverlayRef.current) {
-          if (st.player.skillCooldown > 0) {
-              const pct = (st.player.skillCooldown / st.player.skillMaxCooldown) * 100;
+          if (human.skillCooldown > 0) {
+              const pct = (human.skillCooldown / human.skillMaxCooldown) * 100;
               skillCdOverlayRef.current.style.height = `${pct}%`;
               skillCdOverlayRef.current.style.opacity = '1';
           } else {
@@ -3972,38 +3944,40 @@ const triggerScooperSmash = (state: GameState, center: Vector2, ownerId: string,
           }
       }
 
-      // Find active drone if any
+      // 6. 查找活跃无人机
       let activeDroneStats = null;
-      if (st.player.droneState === 'DEPLOYED' && st.player.activeDroneId) {
-          const d = st.drones.find(drone => drone.id === st.player.activeDroneId && !drone.isDocked && drone.hp > 0);
+      if (human.droneState === 'DEPLOYED' && human.activeDroneId) {
+          const d = st.drones.find(drone => drone.id === human.activeDroneId && !drone.isDocked && drone.hp > 0);
           if (d) {
               activeDroneStats = { hp: d.hp, maxHp: d.maxHp, life: d.life, maxLife: d.maxLife };
           }
       }
 
+      // 7. 更新 UI State (使用 human 对象)
       setUiState({
-        pArtAmmo: st.player.artilleryAmmo, pMaxArtAmmo: st.player.maxArtilleryAmmo,
-        pLmgAmmo: st.player.lmgAmmo, pMaxLmgAmmo: st.player.maxLmgAmmo,
-        pIsReloadingLmg: st.player.isReloadingLmg,
-        pDroneState: st.player.droneState,
-        pDroneTimer: st.player.droneTimer, pDroneMaxTimer: st.player.droneMaxTimer,
+        pArtAmmo: human.artilleryAmmo, pMaxArtAmmo: human.maxArtilleryAmmo,
+        pLmgAmmo: human.lmgAmmo, pMaxLmgAmmo: human.maxLmgAmmo,
+        pIsReloadingLmg: human.isReloadingLmg,
+        pDroneState: human.droneState,
+        pDroneTimer: human.droneTimer, pDroneMaxTimer: human.droneMaxTimer,
         pActiveDroneStats: activeDroneStats,
-        pTankMode: st.player.tankMode,
-        pType: st.player.type,
-        pSkillCD: st.player.skillCooldown, pSkillMaxCD: st.player.skillMaxCooldown,
-        pSecondarySkillCD: st.player.secondarySkillCooldown, 
-        pSecondarySkillMaxCD: st.player.secondarySkillMaxCooldown, // Added for Cat
-        pIsOverheated: st.player.isOverheated,
-        pWukongCharge: st.player.wukongChargeTime, pWukongMaxCharge: st.player.wukongMaxCharge,
-        pWukongThrustTimer: st.player.wukongThrustTimer,
+        pTankMode: human.tankMode,
+        pType: human.type,
+        pSkillCD: human.skillCooldown, pSkillMaxCD: human.skillMaxCooldown,
+        pSecondarySkillCD: human.secondarySkillCooldown, 
+        pSecondarySkillMaxCD: human.secondarySkillMaxCooldown, 
+        pIsOverheated: human.isOverheated,
+        pWukongCharge: human.wukongChargeTime, pWukongMaxCharge: human.wukongMaxCharge,
+        pWukongThrustTimer: human.wukongThrustTimer,
         
         // Cat UI Update
-        pCatLives: st.player.lives || 0,
-        pCatCharge: st.player.catIsCharging ? (performance.now() - (st.player.catChargeStartTime || 0)) / 1000 : 0,
+        pCatLives: human.lives || 0,
+        pCatCharge: human.catIsCharging ? (performance.now() - (human.catChargeStartTime || 0)) / 1000 : 0,
         
-        eCatLives: st.enemy.lives || 0,
-
-        eType: st.enemy.type,
+        // 敌人状态基于最近的敌人
+        eCatLives: (nearestEnemy && nearestEnemy.type === CharacterType.CAT) ? (nearestEnemy.lives || 0) : 0,
+        eType: nearestEnemy ? nearestEnemy.type : human.type,
+        
         gameStatus: st.gameStatus
       });
 

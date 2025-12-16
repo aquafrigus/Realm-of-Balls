@@ -4,10 +4,11 @@ import { Sound } from '../sound';
 interface HomeProps {
   onQuickStart: () => void;
   onOpenSettings: () => void;
+  onCustomGame: () => void;
 }
 
-const Home: React.FC<HomeProps> = ({ onQuickStart, onOpenSettings }) => {
-  
+const Home: React.FC<HomeProps> = ({ onQuickStart, onOpenSettings, onCustomGame }) => {
+
   const handleStart = () => {
     Sound.playUI('CLICK');
     onQuickStart();
@@ -98,10 +99,13 @@ const Home: React.FC<HomeProps> = ({ onQuickStart, onOpenSettings }) => {
 
               {/* Game Modes Selector */}
               <div className="flex flex-col items-center gap-2">
-                  <span className="text-[10px] text-slate-500 uppercase tracking-widest">当前模式</span>
-                  <button className="group px-6 py-2.5 bg-slate-900/60 border border-slate-700 hover:border-blue-500/50 rounded-full text-slate-300 hover:text-white transition-all flex items-center gap-3 backdrop-blur-md">
+                  <span className="text-[10px] text-slate-500 uppercase tracking-widest">切换模式</span>
+                  <button 
+                      onClick={() => { Sound.playUI('CLICK'); onCustomGame(); }}
+                      className="group px-6 py-2.5 bg-slate-900/60 border border-slate-700 hover:border-blue-500/50 rounded-full text-slate-300 hover:text-white transition-all flex items-center gap-3 backdrop-blur-md"
+                  >
                       <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981] animate-pulse"></span>
-                      <span className="text-sm font-bold uppercase tracking-wider">本地对战</span>
+                      <span className="text-sm font-bold uppercase tracking-wider">自定义 / 多人</span>
                       <span className="text-xs text-slate-600 group-hover:text-blue-400 ml-2">⇄</span>
                   </button>
               </div>

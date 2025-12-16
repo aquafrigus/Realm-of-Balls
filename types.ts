@@ -1,5 +1,3 @@
-
-
 export enum CharacterType {
   PYRO = 'PYRO',
   TANK = 'TANK',
@@ -42,6 +40,8 @@ export interface Drone extends GameEntity {
 
 export interface PlayerState extends GameEntity {
   type: CharacterType;
+  teamId: number;
+  isBot: boolean;
   hp: number;
   maxHp: number;
   
@@ -89,7 +89,6 @@ export interface PlayerState extends GameEntity {
   // Cat Resources
   lives?: number; // 9 Lives mechanism
   maxLives?: number;
-  invincibleTimer?: number; // Invulnerability after respawn
   catChargeStartTime?: number; // For Pounce charging
   catIsCharging?: boolean; // Is holding LMB
   idleTimer?: number; // Track idle time for zZz animation
@@ -118,15 +117,27 @@ export interface PlayerState extends GameEntity {
   attackCooldown: number;
 
   // Status Effects
-  slowTimer: number; // Duration of slow effect
-  burnTimer: number; // Duration of burn effect
-  flameExposure: number; // 0-100, determines damage ramping
-  isWet: boolean; // Is currently in water
-  disarmTimer: number;   // 缴械：无法普攻
-  silenceTimer: number;  // 沉默：无法技能
-  fearTimer: number;     // 恐惧：反向逃跑 + 无法操控
-  paralysisTimer: number;
-  bufferedInput: 'NONE' | 'HISS';
+  stunTimer: number; 
+  blindTimer: number; 
+  tauntTimer: number;  
+  rootTimer: number;  
+  sleepTimer: number;
+  silenceTimer: number; 
+  disarmTimer: number;
+  fearTimer: number; 
+  petrifyTimer: number;
+  charmTimer?: number;
+  invincibleTimer: number;
+  stealthTimer?: number;
+  hasteTimer?: number;
+  slowTimer: number;
+  isWet: boolean;
+  burnTimer: number;
+  flameExposure: number;
+  bufferedInput: string;
+  // 飘字系统专用字段
+  statusLabel?: string; 
+  burstFlag?: boolean; 
 
   // AI specific
   lastPos?: Vector2;
@@ -181,11 +192,11 @@ export interface Obstacle {
   width: number;
   height: number;
   type: 'WALL' | 'WATER';
+  priority?: number;
 }
 
 export interface GameState {
-  player: PlayerState;
-  enemy: PlayerState;
+  players: PlayerState[];
   projectiles: Projectile[];
   groundEffects: GroundEffect[]; 
   particles: Particle[];
