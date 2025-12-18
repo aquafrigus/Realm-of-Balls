@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import Home from './components/Home';
 import CharacterSelect from './components/CharacterSelect';
 import OpponentSelect from './components/OpponentSelect';
@@ -17,7 +17,7 @@ function App() {
   const [selectedEnemy, setSelectedEnemy] = useState<CharacterType | 'RANDOM'>('RANDOM');
 
   const [gameConfig, setGameConfig] = useState<GameConfig | null>(null);
-  
+
   const [showWiki, setShowWiki] = useState(false);
 
   const handleCustomGame = () => {
@@ -28,13 +28,13 @@ function App() {
   const handleStartCustomGame = (config: GameConfig) => {
     setGameConfig(config);
     if (config.players && config.players[0]) {
-        setSelectedChar(config.players[0].type);
+      setSelectedChar(config.players[0].type);
     }
     setView('GAME');
   };
 
   const handleEnterGame = () => {
-    Sound.init(); 
+    Sound.init();
     Sound.playUI('CLICK');
     setView('HOME');
   };
@@ -53,9 +53,9 @@ function App() {
   };
 
   const startGame = (enemy: CharacterType | 'RANDOM') => {
-      setGameConfig(null);
-      setSelectedEnemy(enemy);
-      setView('GAME');
+    setGameConfig(null);
+    setSelectedEnemy(enemy);
+    setView('GAME');
   };
 
   const backToHome = () => {
@@ -67,12 +67,12 @@ function App() {
   };
 
   const toggleWiki = () => {
-      setShowWiki(!showWiki);
+    setShowWiki(!showWiki);
   };
 
   return (
     <div className="w-full h-screen bg-slate-950 text-white font-sans antialiased relative">
-      
+
       {showWiki && <Wiki onClose={() => setShowWiki(false)} />}
 
       {view === 'INTRO' && (
@@ -80,41 +80,41 @@ function App() {
       )}
 
       {view === 'HOME' && (
-        <Home 
-          onQuickStart={handleQuickStart} 
-          onOpenSettings={handleOpenSettings} 
+        <Home
+          onQuickStart={handleQuickStart}
+          onOpenSettings={handleOpenSettings}
           onCustomGame={handleCustomGame}
         />
       )}
 
       {view === 'CHAR_SELECT' && (
-        <CharacterSelect 
-            onSelectCharacter={handleCharSelected} 
-            onOpenWiki={toggleWiki}
-            onBack={backToHome} 
+        <CharacterSelect
+          onSelectCharacter={handleCharSelected}
+          onOpenWiki={toggleWiki}
+          onBack={backToHome}
         />
       )}
 
       {view === 'OPP_SELECT' && (
-        <OpponentSelect 
-            onSelectOpponent={startGame}
-            onBack={backToCharSelect}
+        <OpponentSelect
+          onSelectOpponent={startGame}
+          onBack={backToCharSelect}
         />
       )}
-      
+
       {view === 'CUSTOM_SETUP' && (
-          <CustomGameSetup 
-              onStart={handleStartCustomGame}
-              onBack={backToHome}
-          />
+        <CustomGameSetup
+          onStart={handleStartCustomGame}
+          onBack={backToHome}
+        />
       )}
 
       {view === 'GAME' && (
-        <Game 
-          playerType={selectedChar} 
+        <Game
+          playerType={selectedChar}
           enemyType={selectedEnemy}
           customConfig={gameConfig}
-          onExit={backToHome} 
+          onExit={backToHome}
         />
       )}
     </div>

@@ -24,7 +24,7 @@ const PYRO_AVATAR = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/200
 const PYRO_SKILL = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23450a0a' rx='20'/%3E%3Ccircle cx='50' cy='60' r='30' fill='%23ef4444' opacity='0.6'/%3E%3Cpath d='M50 20 L50 60' stroke='%23f97316' stroke-width='6' stroke-linecap='round'/%3E%3Ccircle cx='50' cy='60' r='15' fill='%23f59e0b'/%3E%3Cpath d='M20 70 Q50 90 80 70' stroke='%23ef4444' stroke-width='4' fill='none'/%3E%3C/svg%3E`;
 
 // Cat: Cream/Calico Cat - Updated
-const CAT_AVATAR = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3C!-- Body --%3E%3Ccircle cx='50' cy='55' r='35' fill='%23fef3c7' stroke='%23d97706' stroke-width='3'/%3E%3C!-- Ears --%3E%3Cpolygon points='20,35 15,10 40,25' fill='%23fef3c7' stroke='%23d97706' stroke-width='3' stroke-linejoin='round'/%3E%3Cpolygon points='80,35 85,10 60,25' fill='%231f2937' stroke='%23d97706' stroke-width='3' stroke-linejoin='round'/%3E%3C!-- Calico Spot --%3E%3Cpath d='M70 35 Q80 30 85 50 Q75 60 65 50' fill='%23d97706' opacity='0.8'/%3E%3C!-- Eyes --%3E%3Ccircle cx='35' cy='50' r='4' fill='%23000'/%3E%3Ccircle cx='65' cy='50' r='4' fill='%23000'/%3E%3C!-- Nose --%3E%3Cpath d='M47 60 L53 60 L50 64 Z' fill='%23ec4899'/%3E%3C!-- Whiskers --%3E%3Cpath d='M20 58 L5 52 M20 62 L5 66 M80 58 L95 52 M80 62 L95 66' stroke='%231f2937' stroke-width='2'/%3E%3C/svg%3E`;
+const CAT_AVATAR = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3C!-- Body --%3E%3Ccircle cx='50' cy='55' r='35' fill='%23fae8ff' stroke='%23c026d3' stroke-width='3'/%3E%3C!-- Ears --%3E%3Cpolygon points='20,35 15,10 40,25' fill='%23fae8ff' stroke='%23c026d3' stroke-width='3' stroke-linejoin='round'/%3E%3Cpolygon points='80,35 85,10 60,25' fill='%231f2937' stroke='%23c026d3' stroke-width='3' stroke-linejoin='round'/%3E%3C!-- Calico Spot --%3E%3Cpath d='M70 35 Q80 30 85 50 Q75 60 65 50' fill='%23c026d3' opacity='0.8'/%3E%3C!-- Eyes --%3E%3Ccircle cx='35' cy='50' r='4' fill='%23000'/%3E%3Ccircle cx='65' cy='50' r='4' fill='%23000'/%3E%3C!-- Nose --%3E%3Cpath d='M47 60 L53 60 L50 64 Z' fill='%23ec4899'/%3E%3C!-- Whiskers --%3E%3Cpath d='M20 58 L5 52 M20 62 L5 66 M80 58 L95 52 M80 62 L95 66' stroke='%231f2937' stroke-width='2'/%3E%3C/svg%3E`;
 
 // Cat Skill: Scooper
 const CAT_SKILL = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23fffbeb' rx='20'/%3E%3C!-- Handle --%3E%3Crect x='45' y='50' width='10' height='40' fill='%239ca3af'/%3E%3C!-- Scoop --%3E%3Cpath d='M20 20 L80 20 L70 60 L30 60 Z' fill='%23ef4444' stroke='%23b91c1c' stroke-width='3' stroke-linejoin='round'/%3E%3C!-- Slots --%3E%3Crect x='35' y='30' width='5' height='20' fill='%23b91c1c' rx='2'/%3E%3Crect x='50' y='30' width='5' height='20' fill='%23b91c1c' rx='2'/%3E%3Crect x='65' y='30' width='5' height='20' fill='%23b91c1c' rx='2'/%3E%3C/svg%3E`;
@@ -40,7 +40,7 @@ export interface CharacterImageSet {
 
 export const CHARACTER_IMAGES: Record<CharacterType, CharacterImageSet> = {
     [CharacterType.PYRO]: {
-        avatar: PYRO_AVATAR, 
+        avatar: PYRO_AVATAR,
         skill: PYRO_SKILL
     },
     [CharacterType.WUKONG]: {

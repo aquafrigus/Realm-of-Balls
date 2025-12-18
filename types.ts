@@ -44,20 +44,20 @@ export interface PlayerState extends GameEntity {
   isBot: boolean;
   hp: number;
   maxHp: number;
-  
+
   // Death State
   isDead: boolean;
   matchEndTimer: number; // Time since death to delay game over screen
 
-  // Pyro Resource: HEAT SYSTEM
-  heat: number;      // 0 to maxHeat
-  maxHeat: number;
-  isOverheated: boolean;
+  // Pyro Resource: FUEL SYSTEM
+  fuel: number;      // 0 to maxFuel
+  maxFuel: number;
+  isBurnedOut: boolean;
 
   // Tank Resources
   artilleryAmmo: number;     // 0-5
   maxArtilleryAmmo: number;
-  artilleryReloadTimer: number; 
+  artilleryReloadTimer: number;
 
   lmgAmmo: number;           // 0-200
   maxLmgAmmo: number;
@@ -74,13 +74,13 @@ export interface PlayerState extends GameEntity {
   wukongComboStep: number; // 0, 1, 2
   wukongComboTimer: number; // Window to hit next combo
   wukongChargeState: 'NONE' | 'THRUST' | 'SMASH'; // Right click or Space
-  wukongChargeTime: number; 
+  wukongChargeTime: number;
   wukongMaxCharge: number;
   wukongChargeHoldTimer: number; // Track how long max charge is held
   wukongVaultTimer: number; // Animation timer for vaulting
   wukongThrustTimer: number; // Cooldown for Thrust skill
   isVaulting: boolean; // Flag for vaulting animation state
-  
+
   // Wukong Visuals
   wukongLastAttackTime: number; // For rendering attack animations
   wukongLastAttackType: 'COMBO_1' | 'COMBO_2' | 'COMBO_SMASH' | 'SKILL_SMASH' | 'THRUST' | 'NONE';
@@ -96,10 +96,10 @@ export interface PlayerState extends GameEntity {
   isPouncing: boolean;    // [新增] 是否处于飞扑（滞空）状态
   pounceTimer: number;
   hasPounceHit: boolean;  // [新增] 本次飞扑是否已经触发过攻击（防止对同一敌人多次触发）
-  
+
   angle: number; // Body rotation
   aimAngle: number; // Turret/Aim rotation
-  
+
   // Tank specific
   tankMode: TankMode;
   siegeSwitchTimer: number;
@@ -108,7 +108,7 @@ export interface PlayerState extends GameEntity {
   isFiringFlamethrower: boolean;
   currentWeaponRange?: number; // 当前根据鼠标距离计算出的射程
   currentWeaponAngle?: number; // 当前根据射程换算出的扩散角度 (弧度)
-  
+
   // Cooldowns
   skillCooldown: number;
   skillMaxCooldown: number;
@@ -117,14 +117,14 @@ export interface PlayerState extends GameEntity {
   attackCooldown: number;
 
   // Status Effects
-  stunTimer: number; 
-  blindTimer: number; 
-  tauntTimer: number;  
-  rootTimer: number;  
+  stunTimer: number;
+  blindTimer: number;
+  tauntTimer: number;
+  rootTimer: number;
   sleepTimer: number;
-  silenceTimer: number; 
+  silenceTimer: number;
   disarmTimer: number;
-  fearTimer: number; 
+  fearTimer: number;
   petrifyTimer: number;
   charmTimer?: number;
   invincibleTimer: number;
@@ -136,8 +136,8 @@ export interface PlayerState extends GameEntity {
   flameExposure: number;
   bufferedInput: string;
   // 飘字系统专用字段
-  statusLabel?: string; 
-  burstFlag?: boolean; 
+  statusLabel?: string;
+  burstFlag?: boolean;
 
   // AI specific
   lastPos?: Vector2;
@@ -145,6 +145,11 @@ export interface PlayerState extends GameEntity {
   unstuckDir?: Vector2;
   unstuckTimer?: number;
   burstTimer?: number;
+  aiHissTimer?: number;
+  aiHissDelay?: number;
+  aiIsEvading?: boolean;
+  aiEvasionDir?: Vector2;
+  aiEvasionTimer?: number;
 }
 
 export interface Projectile extends GameEntity {
@@ -152,7 +157,7 @@ export interface Projectile extends GameEntity {
   ownerId: string;
   maxLife: number;
   life: number;
-  projectileType: 'BULLET' | 'BOMB' | 'MAGMA_PROJ' | 'DRONE_SHOT'; 
+  projectileType: 'BULLET' | 'BOMB' | 'MAGMA_PROJ' | 'DRONE_SHOT';
   targetPos?: Vector2; // For lobbed shots
   isAoe?: boolean;
   aoeRadius?: number;
@@ -166,7 +171,7 @@ export interface GroundEffect {
   radius: number;
   life: number;
   maxLife: number;
-  type: 'MAGMA_POOL' | 'WUKONG_SMASH' | 'CRACK' | 'SCOOPER_SMASH' | 'SCOOPER_WARNING';
+  type: 'MAGMA_POOL' | 'WUKONG_SMASH' | 'CRACK' | 'SCOOPER_SMASH' | 'SCOOPER_WARNING' | 'START_BEACON';
   ownerId: string;
   width?: number;
   length?: number;
@@ -198,13 +203,16 @@ export interface Obstacle {
 export interface GameState {
   players: PlayerState[];
   projectiles: Projectile[];
-  groundEffects: GroundEffect[]; 
+  groundEffects: GroundEffect[];
   particles: Particle[];
   obstacles: Obstacle[];
   drones: Drone[]; // Added Drones array
   floatingTexts: FloatingText[]; // Added for status text
   camera: Vector2;
-  gameStatus: 'PLAYING' | 'VICTORY' | 'DEFEAT';
+  screenShakeTimer?: number;
+  screenShakeIntensity?: number;
+  gameStatus: 'PLAYING' | 'VICTORY' | 'DEFEAT' | 'PAUSED';
+  imageCache?: Record<string, HTMLImageElement>;
 }
 
 export interface FloatingText {
@@ -212,6 +220,7 @@ export interface FloatingText {
   pos: Vector2;
   text: string;
   color: string;
+  size?: number;
   life: number;
   maxLife: number;
   velY: number;
