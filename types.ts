@@ -12,6 +12,12 @@ export enum TankMode {
   LMG = 'LMG',
 }
 
+export enum DamageType {
+  PHYSICAL = 'PHYSICAL',
+  FIRE = 'FIRE',
+  MAGIC = 'MAGIC',
+}
+
 export interface Vector2 {
   x: number;
   y: number;
@@ -183,6 +189,7 @@ export interface Projectile extends GameEntity {
   aoeRadius?: number;
   hitTargets?: string[]; // IDs of entities already hit (for penetration)
   isEmp?: boolean; // New attribute: EMP attack
+  damageType?: DamageType;
 }
 
 export interface GroundEffect {
@@ -197,6 +204,7 @@ export interface GroundEffect {
   length?: number;
   rotation?: number;
   targetId?: string;
+  damageType?: DamageType;
 }
 
 export interface Particle {

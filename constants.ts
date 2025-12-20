@@ -1,27 +1,27 @@
 import { CharacterType } from "./types";
 
-export const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+export const STATUS_CONFIG: Record<string, { label: string; color: string; isPositive: boolean }> = {
   // Negative Statuses (Debuffs)
-  stun: { label: '眩晕|拍扁', color: '#fbbf24' },   // Amber-400
-  petrify: { label: '石化', color: '#94a3b8' },    // Slate-400
-  sleep: { label: '催眠', color: '#818cf8' },      // Indigo-400
-  fear: { label: '恐惧', color: '#c084fc' },       // Purple-400
-  charm: { label: '魅惑|踩', color: '#ec4899' },      // Pink-500
-  taunt: { label: '嘲讽', color: '#ef4444' },      // Red-500
-  silence: { label: '沉默', color: '#60a5fa' },    // Blue-400
-  disarm: { label: '缴械', color: '#f87171' },     // Red-400
-  root: { label: '束缚', color: '#22c55e' },       // Green-500
-  blind: { label: '致盲', color: '#10b981' },      // Emerald-500
-  slow: { label: '减速', color: '#3b82f6' },       // Blue-500
-  burn: { label: '灼烧', color: '#ea580c' },       // Orange-600
-  wet: { label: '潮湿', color: '#06b6d4' },        // Cyan-500
+  stun: { label: '眩晕|拍扁', color: '#fbbf24', isPositive: false },   // Amber-400
+  petrify: { label: '石化', color: '#94a3b8', isPositive: false },    // Slate-400
+  sleep: { label: '催眠', color: '#818cf8', isPositive: false },      // Indigo-400
+  fear: { label: '恐惧', color: '#c084fc', isPositive: false },       // Purple-400
+  charm: { label: '魅惑|踩', color: '#ec4899', isPositive: false },      // Pink-500
+  taunt: { label: '嘲讽', color: '#ef4444', isPositive: false },      // Red-500
+  silence: { label: '沉默', color: '#60a5fa', isPositive: false },    // Blue-400
+  disarm: { label: '缴械', color: '#f87171', isPositive: false },     // Red-400
+  root: { label: '束缚', color: '#22c55e', isPositive: false },       // Green-500
+  blind: { label: '致盲', color: '#10b981', isPositive: false },      // Emerald-500
+  slow: { label: '减速', color: '#3b82f6', isPositive: false },       // Blue-500
+  burn: { label: '灼烧', color: '#ea580c', isPositive: false },       // Orange-600
+  wet: { label: '潮湿', color: '#06b6d4', isPositive: false },        // Cyan-500
 
   // Positive Statuses (Buffs)
-  invincible: { label: '无敌', color: '#facc15' }, // Yellow-400
-  stealth: { label: '隐身', color: '#64748b' },    // Slate-500
-  haste: { label: '加速', color: '#0ea5e9' },       // Sky-500
-  heal: { label: '治疗', color: '#34d399' },    // Emerald-400
-  revive: { label: '复活|有精神', color: '#22d3ee' },      // Cyan-400
+  invincible: { label: '无敌', color: '#facc15', isPositive: true }, // Yellow-400
+  stealth: { label: '隐身', color: '#64748b', isPositive: true },    // Slate-500
+  haste: { label: '加速', color: '#0ea5e9', isPositive: true },       // Sky-500
+  heal: { label: '治疗', color: '#34d399', isPositive: true },    // Emerald-400
+  revive: { label: '复活|有精神', color: '#22d3ee', isPositive: true },      // Cyan-400
 
 };
 

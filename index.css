@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background-color: #0f172a;
+  color: white;
+  touch-action: none;
+}
+
+canvas {
+  display: block;
+}

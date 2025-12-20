@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
-    CharacterType, GameState, PlayerState, Vector2, TankMode, GroundEffect, Obstacle, Drone
+    CharacterType, GameState, PlayerState, Vector2, TankMode, GroundEffect, Obstacle, Drone, DamageType
 } from '../types';
 import {
     MAP_SIZE, PHYSICS, CHAR_STATS, STATUS_CONFIG
@@ -35,6 +35,7 @@ interface UIState {
     pWukongThrustTimer: number;
     pCatLives: number;
     pCatCharge: number;
+    pMp: number; pMaxMp: number; // Magic Ball MP
     eCatLives: number;
     eType: CharacterType;
     eDisplayName: string; // 最近敌人显示名称（用于无人机等）
@@ -449,6 +450,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Cat UI
         pCatLives: 0,
         pCatCharge: 0,
+
+        // Magic UI
+        pMp: 0, pMaxMp: 200,
+
         eCatLives: 0,
 
         eType: (stateRef.current.players.find(p => p.id !== 'player') || stateRef.current.players[0]).type,
@@ -814,6 +819,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             target.tauntSourceId = sourceId;
         }
 
+
         // Only set label if it's a debuff (simple check: exists in labelMap)
         // [Modified] Use STATUS_CONFIG for consistent labels
         const config = STATUS_CONFIG[type];
@@ -823,6 +829,23 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // [New] Store position if provided
             if (pos) {
                 target.statusLabelPos = { ...pos };
+            }
+        }
+
+        // [New] Wet Status Logic (Cleansing)
+        if (type === 'wet') {
+            // 1. Extinguish Burn
+            if (target.burnTimer > 0) {
+                target.burnTimer = 0;
+            }
+            // 2. Wake up from Sleep
+            if (target.sleepTimer > 0) {
+                target.sleepTimer = 0;
+                target.statusLabel = "惊醒!";
+            }
+            // 3. Wash off Flame Exposure (Prevent Vaporize/Combustion buildup)
+            if (target.flameExposure > 0) {
+                target.flameExposure = 0;
             }
         }
 
@@ -900,7 +923,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 if (isLastLife) {
                     applyStatus(e, 'fear', 2.5);
                 } else {
-                    applyStatus(e, 'disarm', 2.5);
+                    if (!isMechanical(e)) {
+                        applyStatus(e, 'disarm', 2.5);
+                    }
                     applyStatus(e, 'silence', 2.5);
                     applyStatus(e, 'charm', 1.5);
                 }
@@ -1233,7 +1258,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 《除你武器》- 近身缴械
             const nearest = getNearestEnemy(p);
             if (nearest && Utils.dist(p.pos, nearest.pos) < stats.expelliarmusRange + nearest.radius) {
-                nearest.disarmTimer = Math.max(nearest.disarmTimer, stats.expelliarmusDuration / 1000);
+                applyStatus(nearest, 'disarm', stats.expelliarmusDuration / 1000);
                 nearest.statusLabel = '缴械!';
                 spawnParticles(nearest.pos, 10, p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e', 4);
                 p.statusLabel = '除你武器!';
@@ -1619,7 +1644,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             }
                         } else {
                             // --- 针对玩家的逻辑 ---
-                            takeDamage(t, 150, CharacterType.PYRO);
+                            takeDamage(t, 150, CharacterType.PYRO, DamageType.FIRE);
 
                             // 物理击退
                             const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
@@ -1866,7 +1891,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 applyKnockback(target, pushDir, 1800 + 600 * chargePct);
 
                 // 眩晕所有命中的球
-                target.stunTimer = 2.0;
+                applyStatus(target, 'stun', 2.0);
                 target.slowTimer = 1.5;
 
                 // 打断施法效果
@@ -1936,7 +1961,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
     };
 
-    const takeDamage = (p: PlayerState, amount: number, sourceType?: CharacterType) => {
+    const takeDamage = (p: PlayerState, amount: number, sourceType?: CharacterType, damageType: DamageType = DamageType.PHYSICAL) => {
         // Cat Invincibility
         if (p.type === CharacterType.CAT && (p.invincibleTimer || 0) > 0) return;
 
@@ -1969,14 +1994,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
         // Water Resistance vs Fire
-        if (p.isWet && sourceType === CharacterType.PYRO) {
+        if (p.isWet && damageType === DamageType.FIRE) {
             finalDmg *= 0.5;
         }
 
-        // Pyro vs Pyro: 不再有减伤，已在 fireFlamethrower 中实现增伤
-        // (旧逻辑已移除，配合 pyroDamageMultiplier 使用)
         // Wukong Fire Resistance (30% reduction)
-        if (p.type === CharacterType.WUKONG && sourceType === CharacterType.PYRO) {
+        if (p.type === CharacterType.WUKONG && damageType === DamageType.FIRE) {
             finalDmg *= 0.7;
         }
 
@@ -2088,8 +2111,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (p1.isDead) continue;
 
             // 移动与阻尼
-            p1.pos = Utils.add(p1.pos, Utils.mult(p1.vel, deltaTime * 60));
+            const moveX = p1.vel.x * deltaTime * 60;
+            const moveY = p1.vel.y * deltaTime * 60;
+            if (Number.isFinite(moveX) && Number.isFinite(moveY)) {
+                p1.pos = Utils.add(p1.pos, { x: moveX, y: moveY });
+            }
             p1.vel = Utils.mult(p1.vel, PHYSICS.FRICTION);
+
+            // [Safety] Ensure pos is finite
+            if (!Number.isFinite(p1.pos.x)) p1.pos.x = MAP_SIZE.width / 2;
+            if (!Number.isFinite(p1.pos.y)) p1.pos.y = MAP_SIZE.height / 2;
 
             // 边界限制
             if (p1.pos.x < p1.radius) { p1.pos.x = p1.radius; p1.vel.x *= -0.5; }
@@ -2397,7 +2428,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             // 2. 控制状态
             // 恐惧
-            if (!prev.fear && curr.fear) spawn(STATUS_CONFIG.fear.label + '!', STATUS_CONFIG.fear.color);
+            if (!prev.fear && curr.fear && !labelShown) spawn(STATUS_CONFIG.fear.label + '!', STATUS_CONFIG.fear.color);
 
             // 萌翻/踩 (保留特殊组合逻辑，但使用 Charm 颜色)
             const isCharmed = curr.silence && curr.disarm && !curr.fear && !curr.stun;
@@ -2405,16 +2436,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (!wasCharmed && isCharmed && !labelShown) spawn("被萌翻!", STATUS_CONFIG.charm.color);
 
             // 单独控制
-            if (!prev.silence && curr.silence && !isCharmed) spawn(STATUS_CONFIG.silence.label, STATUS_CONFIG.silence.color);
-            if (!prev.disarm && curr.disarm && !isCharmed) spawn(STATUS_CONFIG.disarm.label, STATUS_CONFIG.disarm.color);
-            if (!prev.root && curr.root) spawn(STATUS_CONFIG.root.label, STATUS_CONFIG.root.color);
-            if (!prev.blind && curr.blind) spawn(STATUS_CONFIG.blind.label, STATUS_CONFIG.blind.color);
-            if (!prev.taunt && curr.taunt) spawn(STATUS_CONFIG.taunt.label + '!', STATUS_CONFIG.taunt.color);
-            if (!prev.charm && curr.charm) spawn(pickLabel(STATUS_CONFIG.charm.label) + '!', STATUS_CONFIG.charm.color);
+            if (!prev.silence && curr.silence && !isCharmed && !labelShown) spawn(STATUS_CONFIG.silence.label, STATUS_CONFIG.silence.color);
+            if (!prev.disarm && curr.disarm && !isCharmed && !labelShown) spawn(STATUS_CONFIG.disarm.label, STATUS_CONFIG.disarm.color);
+            if (!prev.root && curr.root && !labelShown) spawn(STATUS_CONFIG.root.label, STATUS_CONFIG.root.color);
+            if (!prev.blind && curr.blind && !labelShown) spawn(STATUS_CONFIG.blind.label, STATUS_CONFIG.blind.color);
+            if (!prev.taunt && curr.taunt && !labelShown) spawn(STATUS_CONFIG.taunt.label + '!', STATUS_CONFIG.taunt.color);
+            if (!prev.charm && curr.charm && !labelShown) spawn(pickLabel(STATUS_CONFIG.charm.label) + '!', STATUS_CONFIG.charm.color);
 
             // 眩晕/催眠
             if (!prev.stun && curr.stun && !labelShown) spawn(pickLabel(STATUS_CONFIG.stun.label), STATUS_CONFIG.stun.color);
-            if (!prev.sleep && curr.sleep) spawn(STATUS_CONFIG.sleep.label, STATUS_CONFIG.sleep.color);
+            if (!prev.sleep && curr.sleep && !labelShown) spawn(STATUS_CONFIG.sleep.label, STATUS_CONFIG.sleep.color);
 
             // 3. 核心机制
             // 坦克模式
@@ -2456,36 +2487,127 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             return;
         }
 
-        // Charm / Taunt: Forced Movement logic
+        // [优先级系统] 恐惧 > 嘲讽 > 魅惑
+        // 恐惧优先：强制反向移动 (远离敌人)
+        if ((p.fearTimer || 0) > 0) {
+            const enemy = getNearestEnemy(p);
+            if (enemy) {
+                const runDir = Utils.normalize(Utils.sub(p.pos, enemy.pos));
+                const fearSpeed = CHAR_STATS[p.type].speed * 0.9;
+                p.vel = Utils.add(p.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * fearSpeed * dt * 60));
+                p.angle = Math.atan2(runDir.y, runDir.x);
+            }
+            return;
+        }
+
+        // 嘲讽次之，魅惑最后
+        // Taunt / Charm: Forced Movement logic (嘲讽优先于魅惑)
         let tauntTarget: PlayerState | null = null;
-        if ((p.charmTimer || 0) > 0 || (p.tauntTimer || 0) > 0) {
-            if (p.tauntTimer > 0 && p.tauntSourceId) {
+        const isTaunted = (p.tauntTimer || 0) > 0;
+        const isCharmed = (p.charmTimer || 0) > 0 && !isTaunted; // 嘲讽时忽略魅惑
+
+        if (isTaunted || isCharmed) {
+            if (isTaunted && p.tauntSourceId) {
                 tauntTarget = stateRef.current.players.find(pl => pl.id === p.tauntSourceId) || null;
                 if (tauntTarget && tauntTarget.isDead) tauntTarget = null;
             }
             if (!tauntTarget) tauntTarget = getNearestEnemy(p);
 
+            // [Refined Taunt Logic]
             if (tauntTarget) {
-                const runDir = Utils.normalize(Utils.sub(tauntTarget.pos, p.pos));
-                // Forced move speed (Charm: 50%, Taunt: 120%)
-                const speedFactor = (p.charmTimer || 0) > 0 ? 0.5 : 1.2;
-                const forceSpeed = CHAR_STATS[p.type].speed * speedFactor;
+                const distToTarget = Utils.dist(p.pos, tauntTarget.pos);
+                let attackRange = 100; // default
 
-                p.vel = Utils.add(p.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * forceSpeed * dt * 60));
-                p.angle = Math.atan2(runDir.y, runDir.x);
+                // Determine effective attack range based on character
+                if (p.type === CharacterType.PYRO) attackRange = CHAR_STATS.PYRO.flamethrowerRange - 50;
+                else if (p.type === CharacterType.WUKONG) attackRange = 120; // Combo range
+                else if (p.type === CharacterType.CAT) attackRange = CHAR_STATS.CAT.scratchRange + 20;
+                else if (p.type === CharacterType.MAGIC) attackRange = CHAR_STATS.MAGIC.curseRange - 50;
+                else if (p.type === CharacterType.TANK) {
+                    attackRange = p.tankMode === TankMode.ARTILLERY ? 400 : 300;
+                }
 
-                if (p.tauntTimer > 0) {
-                    // Force aim and attacks
-                    p.aimAngle = p.angle;
-                    keysRef.current['MouseLeft'] = true;
-                    keysRef.current['MouseRight'] = false;
-                    keysRef.current['Space'] = false;
+                if (isCharmed || distToTarget > attackRange) {
+                    // Rush / Move towards target
+                    const runDir = Utils.normalize(Utils.sub(tauntTarget.pos, p.pos));
+                    // Forced move speed (Charm: 50%, Taunt: 120%)
+                    const speedFactor = isCharmed ? 0.5 : 1.2;
+                    const forceSpeed = CHAR_STATS[p.type].speed * speedFactor;
+
+                    p.vel = Utils.add(p.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * forceSpeed * dt * 60));
+                    p.angle = Math.atan2(runDir.y, runDir.x);
+
+                    // Taunt: Force Aim but NO Attack while rushing
+                    if (!isCharmed) {
+                        p.aimAngle = p.angle;
+                    }
+                }
+                else if (!isCharmed && distToTarget <= attackRange) {
+                    // Taunt & Close: STOP and ATTACK
+                    p.vel = Utils.mult(p.vel, 0.8); // Friction
+                    const aimDir = Utils.sub(tauntTarget.pos, p.pos);
+                    p.aimAngle = Math.atan2(aimDir.y, aimDir.x);
+                    p.angle = p.aimAngle;
+
+                    // Manual Attack Trigger
+                    if (p.type === CharacterType.PYRO) {
+                        const { range, angle } = calculatePyroShape(distToTarget);
+                        p.currentWeaponRange = range;
+                        p.currentWeaponAngle = angle;
+                        if (p.fuel > 0 && !p.isBurnedOut) {
+                            p.isFiringFlamethrower = true;
+                            p.fuel -= CHAR_STATS[CharacterType.PYRO].fuelConsumption * dt;
+                            if (p.fuel <= 0) {
+                                p.fuel = 0;
+                                p.isBurnedOut = true;
+                                Sound.playOverheat();
+                                spawnParticles(p.pos, 15, '#ffffff', 5, 0.5);
+                            }
+                            fireFlamethrower(p, dt);
+                        } else {
+                            p.isFiringFlamethrower = false;
+                        }
+                    }
+                    else if (p.type === CharacterType.WUKONG) {
+                        // Force Left Click Combo
+                        handleWukongCombo(p);
+                    }
+                    else if (p.type === CharacterType.CAT) {
+                        // Force Scratch
+                        handleCatScratch(p);
+                    }
+                    else if (p.type === CharacterType.MAGIC) {
+                        // Force Curse
+                        handleMagicCurse(p, tauntTarget.pos);
+                    }
+                    else if (p.type === CharacterType.TANK) {
+                        // Tank Attack
+                        if (p.attackCooldown <= 0) {
+                            if (p.tankMode === TankMode.ARTILLERY) {
+                                if (p.artilleryAmmo >= 1 && distToTarget > CHAR_STATS.TANK.artilleryMinRange) {
+                                    fireArtillery(p, tauntTarget.pos);
+                                    p.artilleryAmmo -= 1;
+                                    p.attackCooldown = 2.5;
+                                }
+                            } else {
+                                if (!p.isReloadingLmg && p.lmgAmmo >= 1) {
+                                    fireLMG(p);
+                                    p.lmgAmmo -= 1;
+                                    p.attackCooldown = 0.08;
+                                    if (p.lmgAmmo <= 0) {
+                                        p.lmgAmmo = 0;
+                                        p.isReloadingLmg = true;
+                                        p.lmgReloadTimer = 0;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
-            // If it's JUST charm, we return early as before (no attacking allowed)
-            // If it's taunt, we allow fallthrough to character-specific "MouseLeft" logic
-            if ((p.charmTimer || 0) > 0) return;
+            // Return early to prevent ANY other input processing (Movement, Skills, etc.)
+            return;
         }
 
 
@@ -2540,17 +2662,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             return;
         }
 
-        // 恐惧状态：强制反向移动 (远离敌人)
-        if (p.fearTimer > 0) {
-            const enemy = getNearestEnemy(p);
-            if (enemy) {
-                const runDir = Utils.normalize(Utils.sub(p.pos, enemy.pos));
-                const fearSpeed = CHAR_STATS[p.type].speed * 0.9;
-                p.vel = Utils.add(p.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * fearSpeed * dt * 60));
-                p.angle = Math.atan2(runDir.y, runDir.x);
-            }
-            return;
-        }
+        // [已移至上方] 恐惧状态已在优先级逻辑中处理
 
         let accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[p.type].speed * speedMult;
 
@@ -2576,8 +2688,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const targetAngle = Math.atan2(moveDir.y, moveDir.x);
             let diff = targetAngle - p.angle;
             // Normalize diff to [-PI, PI]
-            while (diff > Math.PI) diff -= Math.PI * 2;
-            while (diff < -Math.PI) diff += Math.PI * 2;
+            if (Number.isFinite(diff)) {
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+            } else {
+                diff = 0;
+            }
 
             // Interpolate (Lerp)
             const rotationSpeed = 15.0; // Adjust for smoothness
@@ -2745,42 +2861,61 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             return;
         }
 
-        if ((ai.charmTimer || 0) > 0 || (ai.tauntTimer || 0) > 0) {
+        // [优先级系统] 恐惧 > 嘲讽 > 魅惑
+        // 恐惧优先：强制远离敌人
+        if ((ai.fearTimer || 0) > 0) {
+            const enemy = getNearestEnemy(ai);
+            if (enemy) {
+                const runDir = Utils.normalize(Utils.sub(ai.pos, enemy.pos));
+                const fearSpeed = CHAR_STATS[ai.type].speed * 0.9;
+                ai.vel = Utils.add(ai.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * fearSpeed * dt * 60));
+                ai.angle = Math.atan2(runDir.y, runDir.x);
+            }
+            return;
+        }
 
+        // 嘲讽次之，魅惑最后
+        const isTaunted = (ai.tauntTimer || 0) > 0;
+        const isCharmed = (ai.charmTimer || 0) > 0 && !isTaunted; // 嘲讽时忽略魅惑
 
+        if (isTaunted || isCharmed) {
             // Find target (Taunt source or nearest enemy)
             let tauntTarget = null;
-            if (ai.tauntTimer > 0 && ai.tauntSourceId) {
+            if (isTaunted && ai.tauntSourceId) {
                 tauntTarget = stateRef.current.players.find(p => p.id === ai.tauntSourceId);
                 if (tauntTarget && tauntTarget.isDead) tauntTarget = null;
             }
             if (!tauntTarget) tauntTarget = getNearestEnemy(ai);
 
             if (tauntTarget) {
-                const runDir = Utils.normalize(Utils.sub(tauntTarget.pos, ai.pos));
-                // Forced move speed (Charm: 50%, Taunt: 120%)
-                const speedFactor = (ai.charmTimer || 0) > 0 ? 0.5 : 1.2;
-                const forceSpeed = CHAR_STATS[ai.type].speed * speedFactor;
+                const distToTarget = Utils.dist(ai.pos, tauntTarget.pos);
+                let attackRange = 100;
+                if (ai.type === CharacterType.PYRO) attackRange = CHAR_STATS.PYRO.flamethrowerRange - 50;
+                else if (ai.type === CharacterType.WUKONG) attackRange = 120;
+                else if (ai.type === CharacterType.CAT) attackRange = CHAR_STATS.CAT.scratchRange + 20;
+                else if (ai.type === CharacterType.MAGIC) attackRange = CHAR_STATS.MAGIC.curseRange - 50;
+                else if (ai.type === CharacterType.TANK) attackRange = ai.tankMode === TankMode.ARTILLERY ? 400 : 300;
 
-                ai.vel = Utils.add(ai.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * forceSpeed * dt * 60));
-                ai.angle = Math.atan2(runDir.y, runDir.x);
-                ai.aimAngle = ai.angle;
+                // Rush only if outside attack range
+                if (isCharmed || distToTarget > attackRange) {
+                    const runDir = Utils.normalize(Utils.sub(tauntTarget.pos, ai.pos));
+                    const speedFactor = isCharmed ? 0.5 : 1.2;
+                    const forceSpeed = CHAR_STATS[ai.type].speed * speedFactor;
 
-                // Forced Attacks (Taunt only, no skills)
-                if (ai.tauntTimer > 0) {
-                    // Simulate MouseLeft input for character skills that are considered "basic attacks"
-                    // Most characters' MouseLeft is basic attack.
-                    // We handle this by setting a temporary flag or directly calling attack logic.
-                    // Since handleAI is called before character specific logic, we can just ensure it doesn't return.
+                    ai.vel = Utils.add(ai.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * forceSpeed * dt * 60));
+                    ai.aimAngle = Math.atan2(runDir.y, runDir.x);
+                    ai.angle = ai.aimAngle;
+                } else if (!isCharmed) {
+                    // Close enough to taunt target: Stop and Aim
+                    ai.vel = Utils.mult(ai.vel, 0.8);
+                    const aimDir = Utils.sub(tauntTarget.pos, ai.pos);
+                    ai.aimAngle = Math.atan2(aimDir.y, aimDir.x);
+                    ai.angle = ai.aimAngle;
                 }
             }
 
-            // If taunted, we want to allow the "basic attack" part of handleAI character-specific blocks
-            // but the current handleAI structure for skills is mixed.
-            // Let's explicitly trigger basic attacks for Taunt here or modification of the return.
-            if (ai.tauntTimer > 0 && tauntTarget) {
+            if (isTaunted && tauntTarget) {
                 // Fallthrough to character specific blocks but skip skills.
-                // We'll add a 'skipSkills' flag to AI state.
                 ai.aiSkipSkills = true;
             } else {
                 return;
@@ -2981,14 +3116,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             return;
         }
 
-        // 恐惧状态：强制远离目标 (优先级高于回避)
-        if (ai.fearTimer > 0 && target) {
-            const runDir = Utils.normalize(Utils.sub(ai.pos, target.pos));
-            const fearSpeed = CHAR_STATS[ai.type].speed * 0.9;
-            ai.vel = Utils.add(ai.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * fearSpeed * dt * 60));
-            ai.angle = Math.atan2(runDir.y, runDir.x);
-            return;
-        }
+        // [已移至上方] 恐惧状态已在优先级逻辑中处理
 
         // 教练球 AI (保持不变)
         if (ai.type === CharacterType.COACH) {
@@ -3437,8 +3565,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // 计算最短旋转角
                 let diff = targetAngle - ai.angle;
                 // Normalize -PI to PI
-                while (diff > Math.PI) diff -= Math.PI * 2;
-                while (diff < -Math.PI) diff += Math.PI * 2;
+                if (Number.isFinite(diff)) {
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                } else {
+                    diff = 0;
+                }
 
                 const turnSpeed = 15; // rad/s
 
@@ -3450,6 +3582,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ai.angle += change;
                 }
             }
+        }
+
+        // [Final Blind Jitter] Centralized jitter for AI indicators & skill directions
+        // Applying this at the end ensures character-specific "stable" tracking logic 
+        // doesn't overwrite the blind effect.
+        if ((ai.blindTimer || 0) > 0) {
+            const jitter = (Math.random() - 0.5) * 1.5; // Same spread as player (approx 85 deg)
+            ai.aimAngle += jitter;
+            // Also update body angle if they use it for weapons (like Pyro flamethrower or Tank body-based aim)
+            // But usually aimAngle is the primary direction for projectiles/indicators.
         }
     };
 
@@ -3585,7 +3727,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         const pyroMult = e.type === CharacterType.PYRO
                             ? (CHAR_STATS[CharacterType.PYRO].pyroDamageMultiplier || 1)
                             : 1;
-                        takeDamage(e, baseDmg * rampMult * pyroMult * dt, CharacterType.PYRO);
+                        takeDamage(e, baseDmg * rampMult * pyroMult * dt, CharacterType.PYRO, DamageType.FIRE);
                     }
                     if (Math.random() < 0.15) spawnParticles(e.pos, 1, '#ff4400', 1, 0.5);
                 }
@@ -3615,7 +3757,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             life: duration,
             targetPos: target,
             isAoe: true,
-            aoeRadius: CHAR_STATS[CharacterType.PYRO].magmaPoolRadius
+            aoeRadius: CHAR_STATS[CharacterType.PYRO].magmaPoolRadius,
+            damageType: DamageType.FIRE
         });
     };
 
@@ -3721,7 +3864,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         // Regular Impact: Create new pool
                         state.groundEffects.push({
                             id: Math.random().toString(), pos: p.pos, radius: p.aoeRadius || 80,
-                            life: 10, maxLife: 10, type: 'MAGMA_POOL', ownerId: p.ownerId
+                            life: 10, maxLife: 10, type: 'MAGMA_POOL', ownerId: p.ownerId, damageType: DamageType.FIRE
                         });
                     }
 
@@ -3867,18 +4010,28 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         // 命中玩家
                         if (p.projectileType === 'MAGIC_SPELL') {
                             // 魔法球咒语 - 施加随机负面状态
-                            const debuffTypes = ['fear', 'stun', 'slow', 'root', 'silence', 'disarm', 'blind', 'sleep', 'petrify', 'burn', 'taunt'];
+                            // [Modified] Dynamically pick from ALL negative statuses (excluding disarm/wet)
+                            // 1. Get all negative keys
+                            const allDebuffs = Object.keys(STATUS_CONFIG).filter(k =>
+                                !STATUS_CONFIG[k].isPositive &&
+                                k !== 'disarm' &&
+                                k !== 'wet'
+                            );
 
-                            // Mechanical Immunities: handled by applyStatus
+                            // Mechanical Immunities: handled by applyStatus internally? 
+                            // Actually applyStatus handles the *application* check, 
+                            // but we want to avoid picking an immune status if possible to not waste the hit.
+
+                            let pool = allDebuffs;
                             if (isMechanical(hitEntity)) {
-                                // Optimized: Filter out immune types to avoid "wasted" status rolls
-                                const allowedTypes = debuffTypes.filter(t => t !== 'fear' && t !== 'sleep' && t !== 'charm' && t !== 'silence' && t !== 'taunt');
-                                const type = allowedTypes[Math.floor(Math.random() * allowedTypes.length)];
-                                const duration = 0.5 + Math.random() * 2.5;
-                                applyStatus(hitEntity, type, duration, p.ownerId);
-                            } else {
-                                const type = debuffTypes[Math.floor(Math.random() * debuffTypes.length)];
-                                const duration = 0.5 + Math.random() * 2.5; // 0.5-3秒
+                                // Tank/Drone/Turret immunities
+                                const immune = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
+                                pool = allDebuffs.filter(t => !immune.includes(t));
+                            }
+
+                            if (pool.length > 0) {
+                                const type = pool[Math.floor(Math.random() * pool.length)];
+                                const duration = 0.5 + Math.random() * 2.5; // 0.5 - 3.0 seconds
                                 applyStatus(hitEntity, type, duration, p.ownerId);
                             }
                             spawnParticles(p.pos, 8, p.color, 4);
@@ -4081,7 +4234,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             p.burnTimer -= dt;
             const flatBurn = 25;
             const percentBurn = p.maxHp * 0.015;
-            takeDamage(p, (flatBurn + percentBurn) * dt, CharacterType.PYRO);
+            takeDamage(p, (flatBurn + percentBurn) * dt, CharacterType.PYRO, DamageType.FIRE);
 
             if (Math.random() < 0.2) {
                 spawnParticles(p.pos, 1, '#f97316', 1, 0.6);
@@ -4280,7 +4433,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (p.id === g.ownerId) {
                             if (p.hp < p.maxHp) p.hp += 50 * dt;
                         } else {
-                            takeDamage(p, 50 * dt, CharacterType.PYRO);
+                            takeDamage(p, 50 * dt, CharacterType.PYRO, DamageType.FIRE);
                             p.burnTimer = 3.0;
                             p.vel = Utils.mult(p.vel, 0.90);
                         }
@@ -4351,7 +4504,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
                 } else {
                     takeDamage(t, finalDamage); // 玩家受到衰减后的伤害
-                    t.stunTimer = 2.0;
+                    applyStatus(t, 'stun', 2.0);
                     t.statusLabel = "拍扁!";
                 }
                 spawnParticles(t.pos, 20, '#b91c1c', 8);
@@ -4531,9 +4684,17 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             targetY += seedY * intensity;
         }
 
+        // [Safety] Ensure targets are finite
+        if (!Number.isFinite(targetX)) targetX = state.camera.x;
+        if (!Number.isFinite(targetY)) targetY = state.camera.y;
+
         // Smooth Camera Follow
-        state.camera.x += (targetX - state.camera.x) * 0.08; // Slightly faster for responsiveness
+        state.camera.x += (targetX - state.camera.x) * 0.08;
         state.camera.y += (targetY - state.camera.y) * 0.08;
+
+        // [Safety] Final camera check
+        if (!Number.isFinite(state.camera.x)) state.camera.x = 0;
+        if (!Number.isFinite(state.camera.y)) state.camera.y = 0;
     };
 
     // --- Rendering ---
@@ -4541,6 +4702,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     const draw = (ctx: CanvasRenderingContext2D) => {
         const state = stateRef.current;
         const { width, height } = ctx.canvas;
+        const human = getHumanPlayer();
 
         // Memoize images to avoid re-creating HTMLImageElements every frame
         if (!stateRef.current.imageCache) stateRef.current.imageCache = {};
@@ -4549,1192 +4711,1186 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         ctx.fillRect(0, 0, width, height);
 
         ctx.save();
-        ctx.translate(-state.camera.x, -state.camera.y);
+        try {
+            ctx.translate(-state.camera.x, -state.camera.y);
 
-        // Map Grid
-        ctx.strokeStyle = '#334155';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(0, 0, MAP_SIZE.width, MAP_SIZE.height);
-        ctx.beginPath();
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = '#1e293b';
-        for (let x = 0; x <= MAP_SIZE.width; x += 100) { ctx.moveTo(x, 0); ctx.lineTo(x, MAP_SIZE.height); }
-        for (let y = 0; y <= MAP_SIZE.height; y += 100) { ctx.moveTo(0, y); ctx.lineTo(MAP_SIZE.width, y); }
-        ctx.stroke();
+            // Map Grid
+            ctx.strokeStyle = '#334155';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(0, 0, MAP_SIZE.width, MAP_SIZE.height);
+            ctx.beginPath();
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = '#1e293b';
+            for (let x = 0; x <= MAP_SIZE.width; x += 100) { ctx.moveTo(x, 0); ctx.lineTo(x, MAP_SIZE.height); }
+            for (let y = 0; y <= MAP_SIZE.height; y += 100) { ctx.moveTo(0, y); ctx.lineTo(MAP_SIZE.width, y); }
+            ctx.stroke();
 
-        // Ground Effects
-        state.groundEffects.forEach(g => {
-            if (g.type === 'MAGMA_POOL') {
-                ctx.fillStyle = 'rgba(127, 29, 29, 0.5)';
-                ctx.beginPath();
-                ctx.arc(g.pos.x, g.pos.y, g.radius, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.fillStyle = 'rgba(185, 28, 28, 0.8)';
-                ctx.beginPath();
-                ctx.arc(g.pos.x, g.pos.y, g.radius * 0.6, 0, Math.PI * 2);
-                ctx.fill();
-            } else if (g.type === 'CRACK') {
-                // Fading Crack
-                const alpha = g.life / g.maxLife;
+            // Ground Effects
+            state.groundEffects.forEach(g => {
+                if (g.type === 'MAGMA_POOL') {
+                    ctx.fillStyle = 'rgba(127, 29, 29, 0.5)';
+                    ctx.beginPath();
+                    ctx.arc(g.pos.x, g.pos.y, g.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = 'rgba(185, 28, 28, 0.8)';
+                    ctx.beginPath();
+                    ctx.arc(g.pos.x, g.pos.y, g.radius * 0.6, 0, Math.PI * 2);
+                    ctx.fill();
+                } else if (g.type === 'CRACK') {
+                    // Fading Crack
+                    const alpha = g.life / g.maxLife;
+                    ctx.save();
+                    ctx.translate(g.pos.x, g.pos.y);
+                    ctx.rotate(g.rotation || 0);
+                    ctx.fillStyle = `rgba(0, 0, 0, ${alpha * 0.8})`; // Dark crack
+                    const l = g.length || 100;
+                    const w = g.width || 40;
+
+                    // Draw jagged fissure
+                    ctx.beginPath();
+                    ctx.moveTo(-l / 2, 0);
+                    ctx.lineTo(-l / 4, -w / 3);
+                    ctx.lineTo(0, 0);
+                    ctx.lineTo(l / 4, w / 3);
+                    ctx.lineTo(l / 2, 0);
+                    ctx.lineTo(l / 4, -w / 4);
+                    ctx.lineTo(0, -w / 6);
+                    ctx.lineTo(-l / 4, w / 4);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    ctx.restore();
+                }
+
+
+                // SCOOPER_SMASH moved to high-priority render layer
+
+            });
+
+            // Obstacles
+            state.obstacles.forEach(obs => {
+                if (obs.type === 'WATER') {
+                    ctx.fillStyle = 'rgba(6, 182, 212, 0.3)';
+                    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+                    ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+                } else {
+                    ctx.fillStyle = '#475569';
+                    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+                    ctx.strokeStyle = '#94a3b8';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+                }
+            });
+
+            // [High Priority Visuals 1] SCOOPER WARNING (Rendered AFTER obstacles, BEFORE players)
+            state.groundEffects.forEach(g => {
+                if (g.type === 'SCOOPER_WARNING') {
+                    // 绘制预警阴影 (红色/危险感)
+                    ctx.fillStyle = 'rgba(239, 68, 68, 0.2)'; // 淡淡的红
+                    ctx.beginPath();
+                    ctx.ellipse(g.pos.x, g.pos.y, g.radius, g.radius * 0.8, 0, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 绘制倒计时圈 (收缩)
+                    ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+
+                    const ratio = Math.max(0, g.life / g.maxLife);
+                    const currentRadius = g.radius * ratio;
+
+                    if (currentRadius > 0) {
+                        ctx.ellipse(g.pos.x, g.pos.y, currentRadius, currentRadius * 0.8, 0, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+
+                    // 绘制 "危" 字
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = 'bold 48px sans-serif';
+                    ctx.textBaseline = 'middle';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('⚠', g.pos.x, g.pos.y);
+                }
+            });
+
+            // [High Priority Visuals] Start Beacon (Rendered AFTER obstacles)
+            state.groundEffects.forEach(g => {
+                if (g.type === 'START_BEACON') {
+                    // [Modified] Accelerate fade-out with power factor
+                    const lifeRatio = Math.pow(Math.max(0, g.life / g.maxLife), 1.5);
+                    const pulse = Math.sin(Date.now() / 150) * 0.1 + 0.9;
+
+                    // [Modified] Dynamic Color based on Owner
+                    const owner = state.players.find(p => p.id === g.ownerId);
+                    const color = owner ? owner.color : '#22d3ee'; // Fallback Cyan
+
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 3;
+
+                    // Reduced Opacity (Fainter)
+                    ctx.globalAlpha = 0.3 * lifeRatio;
+                    ctx.beginPath();
+                    ctx.arc(g.pos.x, g.pos.y, g.radius * pulse, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    ctx.fillStyle = color;
+                    ctx.globalAlpha = 0.05 * lifeRatio; // Very faint fill
+                    ctx.fill();
+
+                    // Inner Ring
+                    ctx.beginPath();
+                    ctx.strokeStyle = color; // Reuse main color for inner ring
+                    ctx.lineWidth = 1; // Thinner
+                    ctx.globalAlpha = 0.4 * lifeRatio;
+                    ctx.arc(g.pos.x, g.pos.y, g.radius * pulse * 0.7, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    ctx.globalAlpha = 1.0;
+                }
+            });
+
+            // Drones
+            state.drones.forEach(d => {
+                if (d.hp <= 0 || d.isDocked) return; // Don't draw if dead or docked
+
                 ctx.save();
-                ctx.translate(g.pos.x, g.pos.y);
-                ctx.rotate(g.rotation || 0);
-                ctx.fillStyle = `rgba(0, 0, 0, ${alpha * 0.8})`; // Dark crack
-                const l = g.length || 100;
-                const w = g.width || 40;
+                ctx.translate(d.pos.x, d.pos.y);
+                // Hover animation
+                ctx.translate(0, Math.sin(Date.now() / 100) * 3);
 
-                // Draw jagged fissure
+                // 判定敌对显示红光：非自己所有，且其主人与自己非同队
+                const owner = state.players.find(p => p.id === d.ownerId);
+                const isEnemyDrone = d.ownerId !== human.id && (!owner || owner.teamId !== human.teamId);
+
+                if (isEnemyDrone) {
+                    ctx.shadowColor = '#ef4444'; // 红色光晕
+                    ctx.shadowBlur = 15;         // 发光强度
+                }
+
+                // 1. Draw Body
+                ctx.fillStyle = d.color;
                 ctx.beginPath();
-                ctx.moveTo(-l / 2, 0);
-                ctx.lineTo(-l / 4, -w / 3);
-                ctx.lineTo(0, 0);
-                ctx.lineTo(l / 4, w / 3);
-                ctx.lineTo(l / 2, 0);
-                ctx.lineTo(l / 4, -w / 4);
-                ctx.lineTo(0, -w / 6);
-                ctx.lineTo(-l / 4, w / 4);
+                ctx.moveTo(0, -8); ctx.lineTo(8, 0); ctx.lineTo(0, 8); ctx.lineTo(-8, 0);
                 ctx.closePath();
                 ctx.fill();
 
-                ctx.restore();
-            }
-
-
-            // SCOOPER_SMASH moved to high-priority render layer
-
-        });
-
-        // Obstacles
-        state.obstacles.forEach(obs => {
-            if (obs.type === 'WATER') {
-                ctx.fillStyle = 'rgba(6, 182, 212, 0.3)';
-                ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
-                ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
+                // 2. Draw Rotors
+                const rAngle = Date.now() / 50;
+                ctx.strokeStyle = 'rgba(255,255,255,0.5)';
                 ctx.lineWidth = 2;
-                ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
-            } else {
-                ctx.fillStyle = '#475569';
-                ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
-                ctx.strokeStyle = '#94a3b8';
-                ctx.lineWidth = 1;
-                ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
-            }
-        });
-
-        // [High Priority Visuals 1] SCOOPER WARNING (Rendered AFTER obstacles, BEFORE players)
-        state.groundEffects.forEach(g => {
-            if (g.type === 'SCOOPER_WARNING') {
-                // 绘制预警阴影 (红色/危险感)
-                ctx.fillStyle = 'rgba(239, 68, 68, 0.2)'; // 淡淡的红
-                ctx.beginPath();
-                ctx.ellipse(g.pos.x, g.pos.y, g.radius, g.radius * 0.8, 0, 0, Math.PI * 2);
-                ctx.fill();
-
-                // 绘制倒计时圈 (收缩)
-                ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-
-                const ratio = Math.max(0, g.life / g.maxLife);
-                const currentRadius = g.radius * ratio;
-
-                if (currentRadius > 0) {
-                    ctx.ellipse(g.pos.x, g.pos.y, currentRadius, currentRadius * 0.8, 0, 0, Math.PI * 2);
+                [45, 135, 225, 315].forEach(deg => {
+                    const rad = deg * Math.PI / 180;
+                    const armX = Math.cos(rad) * 10;
+                    const armY = Math.sin(rad) * 10;
+                    // Arm
+                    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(armX, armY); ctx.stroke();
+                    // Blade
+                    ctx.beginPath();
+                    ctx.ellipse(armX, armY, 6, 1, rAngle + rad, 0, Math.PI * 2);
                     ctx.stroke();
+                });
+
+                // 3. Mini HP Bar
+                const hpPct = d.hp / d.maxHp;
+                if (hpPct < 1) {
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(-10, -15, 20, 3);
+                    ctx.fillStyle = '#34d399';
+                    ctx.fillRect(-10, -15, 20 * hpPct, 3);
                 }
-
-                // 绘制 "危" 字
-                ctx.fillStyle = '#ef4444';
-                ctx.font = 'bold 48px sans-serif';
-                ctx.textBaseline = 'middle';
-                ctx.textAlign = 'center';
-                ctx.fillText('⚠', g.pos.x, g.pos.y);
-            }
-        });
-
-        // [High Priority Visuals] Start Beacon (Rendered AFTER obstacles)
-        state.groundEffects.forEach(g => {
-            if (g.type === 'START_BEACON') {
-                // [Modified] Accelerate fade-out with power factor
-                const lifeRatio = Math.pow(Math.max(0, g.life / g.maxLife), 1.5);
-                const pulse = Math.sin(Date.now() / 150) * 0.1 + 0.9;
-
-                // [Modified] Dynamic Color based on Owner
-                const owner = state.players.find(p => p.id === g.ownerId);
-                const color = owner ? owner.color : '#22d3ee'; // Fallback Cyan
-
-                ctx.strokeStyle = color;
-                ctx.lineWidth = 3;
-
-                // Reduced Opacity (Fainter)
-                ctx.globalAlpha = 0.3 * lifeRatio;
-                ctx.beginPath();
-                ctx.arc(g.pos.x, g.pos.y, g.radius * pulse, 0, Math.PI * 2);
-                ctx.stroke();
-
-                ctx.fillStyle = color;
-                ctx.globalAlpha = 0.05 * lifeRatio; // Very faint fill
-                ctx.fill();
-
-                // Inner Ring
-                ctx.beginPath();
-                ctx.strokeStyle = color; // Reuse main color for inner ring
-                ctx.lineWidth = 1; // Thinner
-                ctx.globalAlpha = 0.4 * lifeRatio;
-                ctx.arc(g.pos.x, g.pos.y, g.radius * pulse * 0.7, 0, Math.PI * 2);
-                ctx.stroke();
-
-                ctx.globalAlpha = 1.0;
-            }
-        });
-
-        // Drones
-        state.drones.forEach(d => {
-            if (d.hp <= 0 || d.isDocked) return; // Don't draw if dead or docked
-
-            ctx.save();
-            ctx.translate(d.pos.x, d.pos.y);
-            // Hover animation
-            ctx.translate(0, Math.sin(Date.now() / 100) * 3);
-
-            const human = getHumanPlayer();
-            // 判定敌对显示红光：非自己所有，且其主人与自己非同队
-            const owner = state.players.find(p => p.id === d.ownerId);
-            const isEnemyDrone = d.ownerId !== human.id && (!owner || owner.teamId !== human.teamId);
-
-            if (isEnemyDrone) {
-                ctx.shadowColor = '#ef4444'; // 红色光晕
-                ctx.shadowBlur = 15;         // 发光强度
-            }
-
-            // 1. Draw Body
-            ctx.fillStyle = d.color;
-            ctx.beginPath();
-            ctx.moveTo(0, -8); ctx.lineTo(8, 0); ctx.lineTo(0, 8); ctx.lineTo(-8, 0);
-            ctx.closePath();
-            ctx.fill();
-
-            // 2. Draw Rotors
-            const rAngle = Date.now() / 50;
-            ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-            ctx.lineWidth = 2;
-            [45, 135, 225, 315].forEach(deg => {
-                const rad = deg * Math.PI / 180;
-                const armX = Math.cos(rad) * 10;
-                const armY = Math.sin(rad) * 10;
-                // Arm
-                ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(armX, armY); ctx.stroke();
-                // Blade
-                ctx.beginPath();
-                ctx.ellipse(armX, armY, 6, 1, rAngle + rad, 0, Math.PI * 2);
-                ctx.stroke();
+                ctx.restore();
             });
 
-            // 3. Mini HP Bar
-            const hpPct = d.hp / d.maxHp;
-            if (hpPct < 1) {
-                ctx.fillStyle = 'red';
-                ctx.fillRect(-10, -15, 20, 3);
-                ctx.fillStyle = '#34d399';
-                ctx.fillRect(-10, -15, 20 * hpPct, 3);
-            }
-            ctx.restore();
-        });
-
-        // Particles
-        state.particles.forEach(p => {
-            ctx.globalAlpha = p.life / p.maxLife;
-            ctx.fillStyle = p.color;
-            ctx.beginPath();
-            ctx.arc(p.pos.x, p.pos.y, p.size, 0, Math.PI * 2);
-            ctx.fill();
-        });
-        ctx.globalAlpha = 1;
-
-        // Projectiles
-        state.projectiles.forEach(p => {
-            ctx.fillStyle = p.color;
-            ctx.beginPath();
-            ctx.arc(p.pos.x, p.pos.y, p.radius, 0, Math.PI * 2);
-            ctx.fill();
-        });
-
-        // [修改核心] 遍历所有玩家进行绘制
-        // 替换原有的 [state.player, state.enemy].forEach
-        const human = getHumanPlayer();
-
-        // 排序渲染顺序：飞扑的猫猫球和跳跃的猴子需要渲染在最上层
-        const sortedPlayers = [...state.players].sort((a, b) => {
-            // z-order: 0 = 地面, 1 = 空中
-            const getZOrder = (p: PlayerState) => {
-                if (p.type === CharacterType.CAT && p.isPouncing) return 1;
-                if (p.type === CharacterType.WUKONG && p.wukongChargeState === 'SMASH') return 1;
-                return 0;
-            };
-            return getZOrder(a) - getZOrder(b);
-        });
-
-        sortedPlayers.forEach(p => {
-            if (p.isDead) return;
-
-            // Shadow (Dynamic for Wukong Jump)
-            let shadowScale = 1;
-            let shadowAlpha = 0.5;
-            if (p.type === CharacterType.WUKONG && p.wukongChargeState === 'SMASH') {
-                const liftPct = p.wukongChargeTime / p.wukongMaxCharge;
-                shadowScale = 1 - liftPct * 0.7; // Smaller shadow
-                shadowAlpha = 0.5 - liftPct * 0.3; // Lighter shadow
-            }
-
-            ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
-            ctx.beginPath();
-            ctx.arc(p.pos.x + 5, p.pos.y + 5, p.radius * shadowScale, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Drowning/Wet visual
-            if (p.isWet) {
-                ctx.fillStyle = 'rgba(6, 182, 212, 0.4)';
+            // Particles
+            state.particles.forEach(p => {
+                ctx.globalAlpha = p.life / p.maxLife;
+                ctx.fillStyle = p.color;
                 ctx.beginPath();
-                ctx.arc(p.pos.x, p.pos.y, p.radius + 8, 0, Math.PI * 2);
+                ctx.arc(p.pos.x, p.pos.y, p.size, 0, Math.PI * 2);
                 ctx.fill();
-            }
+            });
+            ctx.globalAlpha = 1;
 
-            // Wukong Charge Range Indicator (Under player)
-            if (p.type === CharacterType.WUKONG && p.wukongChargeState === 'SMASH') {
-                const chargePct = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
-                const stats = CHAR_STATS[CharacterType.WUKONG];
-                const currentRange = stats.smashMinRange + (stats.smashMaxRange - stats.smashMinRange) * chargePct;
+            // Projectiles
+            state.projectiles.forEach(p => {
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.pos.x, p.pos.y, p.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // [修改核心] 遍历所有玩家进行绘制
+            // 替换原有的 [state.player, state.enemy].forEach
+
+            // 排序渲染顺序：飞扑的猫猫球和跳跃的猴子需要渲染在最上层
+            const sortedPlayers = [...state.players].sort((a, b) => {
+                // z-order: 0 = 地面, 1 = 空中
+                const getZOrder = (p: PlayerState) => {
+                    if (p.type === CharacterType.CAT && p.isPouncing) return 1;
+                    if (p.type === CharacterType.WUKONG && p.wukongChargeState === 'SMASH') return 1;
+                    return 0;
+                };
+                return getZOrder(a) - getZOrder(b);
+            });
+
+            sortedPlayers.forEach(p => {
+                if (p.isDead) return;
+
+                // Shadow (Dynamic for Wukong Jump)
+                let shadowScale = 1;
+                let shadowAlpha = 0.5;
+                if (p.type === CharacterType.WUKONG && p.wukongChargeState === 'SMASH') {
+                    const liftPct = p.wukongChargeTime / p.wukongMaxCharge;
+                    shadowScale = 1 - liftPct * 0.7; // Smaller shadow
+                    shadowAlpha = 0.5 - liftPct * 0.3; // Lighter shadow
+                }
+
+                ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
+                ctx.beginPath();
+                ctx.arc(p.pos.x + 5, p.pos.y + 5, p.radius * shadowScale, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Drowning/Wet visual
+                if (p.isWet) {
+                    ctx.fillStyle = 'rgba(6, 182, 212, 0.4)';
+                    ctx.beginPath();
+                    ctx.arc(p.pos.x, p.pos.y, p.radius + 8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Wukong Charge Range Indicator (Under player)
+                if (p.type === CharacterType.WUKONG && p.wukongChargeState === 'SMASH') {
+                    const chargePct = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
+                    const stats = CHAR_STATS[CharacterType.WUKONG];
+                    const currentRange = stats.smashMinRange + (stats.smashMaxRange - stats.smashMinRange) * chargePct;
+
+                    ctx.save();
+                    ctx.translate(p.pos.x, p.pos.y);
+
+                    // Exquisite Circular Indicator (Refined)
+                    // 1. Faint Fill
+                    ctx.fillStyle = 'rgba(250, 204, 21, 0.03)';
+                    ctx.beginPath();
+                    ctx.arc(0, 0, currentRange, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 1.5. 风起云涌 & 电闪雷鸣 (Wind & Thunder Effects)
+                    const time = Date.now() / 1000;
+
+                    // Wind (Swirling Clouds)
+                    for (let i = 0; i < 3; i++) {
+                        ctx.save();
+                        const dir = i % 2 === 0 ? 1 : -1;
+                        const speed = 0.5 + i * 0.3;
+                        ctx.rotate(time * speed * dir);
+
+                        ctx.beginPath();
+                        const radiusScale = 0.4 + i * 0.25;
+                        // Draw random detached arcs
+                        ctx.arc(0, 0, currentRange * radiusScale, 0, Math.PI * 1.2);
+                        ctx.strokeStyle = `rgba(250, 204, 21, ${0.1 + i * 0.05})`;
+                        ctx.lineWidth = 4 + i * 2;
+                        ctx.lineCap = 'round';
+                        ctx.stroke();
+                        ctx.restore();
+                    }
+
+                    // Thunder (Random Sparks) - Refined for larger size and duration
+                    const thunderSeed = Math.floor(Date.now() / 150); // Same seed for 150ms to keep it visible
+
+                    // Simple inline seeded random function
+                    const getSeeded = (s: number) => {
+                        const x = Math.sin(s) * 10000;
+                        return x - Math.floor(x);
+                    };
+
+                    // Use the seed combined with player id (or hash) for uniqueness
+                    const playerSeed = p.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+                    const thunderChance = getSeeded(thunderSeed + playerSeed) < 0.4;
+
+                    if (thunderChance) {
+                        const r1 = getSeeded(thunderSeed + playerSeed + 1);
+                        const r2 = getSeeded(thunderSeed + playerSeed + 2);
+                        const r3 = getSeeded(thunderSeed + playerSeed + 3);
+
+                        const sparkAngle = r1 * Math.PI * 2;
+                        const sparkDist = r2 * currentRange * 0.6;
+                        const sx = Math.cos(sparkAngle) * sparkDist;
+                        const sy = Math.sin(sparkAngle) * sparkDist;
+
+                        ctx.save();
+                        ctx.translate(sx, sy);
+                        ctx.rotate(r3 * Math.PI * 2);
+
+                        ctx.beginPath();
+                        // Larger, more jagged path (increased to 30 units)
+                        ctx.moveTo(-30, 0);
+                        ctx.lineTo(-10, 15);
+                        ctx.lineTo(0, -15);
+                        ctx.lineTo(10, 15);
+                        ctx.lineTo(30, 0);
+
+                        ctx.strokeStyle = '#fff7ed'; // Sun-white
+                        ctx.lineWidth = 4;
+                        ctx.shadowColor = '#facc15';
+                        ctx.shadowBlur = 20;
+                        ctx.lineCap = 'round';
+                        ctx.lineJoin = 'round';
+                        ctx.stroke();
+
+                        // Inner bright core
+                        ctx.lineWidth = 2;
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.stroke();
+
+                        ctx.restore();
+                    }
+
+                    // 2. Animated Border (Rotating Dashes or Pulsing)
+                    ctx.rotate(time * 0.5); // Slow rotation
+
+                    ctx.strokeStyle = 'rgba(250, 204, 21, 0.6)';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([15, 10]); // Longer dashes
+                    ctx.beginPath();
+                    ctx.arc(0, 0, currentRange, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    // 3. Inner Solid Ring (Clean edge)
+                    ctx.setLineDash([]);
+                    ctx.strokeStyle = 'rgba(250, 204, 21, 0.3)';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, currentRange - 4, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    ctx.restore();
+                }
 
                 ctx.save();
+
+                // === STEALTH VISUALS ===
+                if (p.stealth) {
+                    if (p.teamId === human.teamId) {
+                        // Ally View: Ghostly Transparency
+                        ctx.globalAlpha = 0.5;
+                    } else {
+                        // Enemy View: Glitch / Flicker
+                        // Random visibility between 0 (invisible) and 0.4 (faint)
+                        // Occasionally completely invisible for frames at a time
+                        if (Math.random() < 0.3) {
+                            ctx.globalAlpha = 0; // Completely invisible
+                        } else {
+                            ctx.globalAlpha = Math.random() * 0.4; // Faint flicker
+                        }
+                    }
+                }
+
                 ctx.translate(p.pos.x, p.pos.y);
 
-                // Exquisite Circular Indicator (Refined)
-                // 1. Faint Fill
-                ctx.fillStyle = 'rgba(250, 204, 21, 0.03)';
-                ctx.beginPath();
-                ctx.arc(0, 0, currentRange, 0, Math.PI * 2);
-                ctx.fill();
-
-                // 1.5. 风起云涌 & 电闪雷鸣 (Wind & Thunder Effects)
-                const time = Date.now() / 1000;
-
-                // Wind (Swirling Clouds)
-                for (let i = 0; i < 3; i++) {
-                    ctx.save();
-                    const dir = i % 2 === 0 ? 1 : -1;
-                    const speed = 0.5 + i * 0.3;
-                    ctx.rotate(time * speed * dir);
-
-                    ctx.beginPath();
-                    const radiusScale = 0.4 + i * 0.25;
-                    // Draw random detached arcs
-                    ctx.arc(0, 0, currentRange * radiusScale, 0, Math.PI * 1.2);
-                    ctx.strokeStyle = `rgba(250, 204, 21, ${0.1 + i * 0.05})`;
-                    ctx.lineWidth = 4 + i * 2;
-                    ctx.lineCap = 'round';
-                    ctx.stroke();
-                    ctx.restore();
-                }
-
-                // Thunder (Random Sparks) - Refined for larger size and duration
-                const thunderSeed = Math.floor(Date.now() / 150); // Same seed for 150ms to keep it visible
-
-                // Simple inline seeded random function
-                const getSeeded = (s: number) => {
-                    const x = Math.sin(s) * 10000;
-                    return x - Math.floor(x);
-                };
-
-                // Use the seed combined with player id (or hash) for uniqueness
-                const playerSeed = p.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-                const thunderChance = getSeeded(thunderSeed + playerSeed) < 0.4;
-
-                if (thunderChance) {
-                    const r1 = getSeeded(thunderSeed + playerSeed + 1);
-                    const r2 = getSeeded(thunderSeed + playerSeed + 2);
-                    const r3 = getSeeded(thunderSeed + playerSeed + 3);
-
-                    const sparkAngle = r1 * Math.PI * 2;
-                    const sparkDist = r2 * currentRange * 0.6;
-                    const sx = Math.cos(sparkAngle) * sparkDist;
-                    const sy = Math.sin(sparkAngle) * sparkDist;
-
-                    ctx.save();
-                    ctx.translate(sx, sy);
-                    ctx.rotate(r3 * Math.PI * 2);
-
-                    ctx.beginPath();
-                    // Larger, more jagged path (increased to 30 units)
-                    ctx.moveTo(-30, 0);
-                    ctx.lineTo(-10, 15);
-                    ctx.lineTo(0, -15);
-                    ctx.lineTo(10, 15);
-                    ctx.lineTo(30, 0);
-
-                    ctx.strokeStyle = '#fff7ed'; // Sun-white
-                    ctx.lineWidth = 4;
-                    ctx.shadowColor = '#facc15';
+                // [新增] 阵营高亮逻辑
+                if (p.teamId !== human.teamId) {
+                    ctx.shadowColor = '#ef4444'; // 敌对红色光晕
                     ctx.shadowBlur = 20;
-                    ctx.lineCap = 'round';
-                    ctx.lineJoin = 'round';
-                    ctx.stroke();
-
-                    // Inner bright core
-                    ctx.lineWidth = 2;
-                    ctx.strokeStyle = '#ffffff';
-                    ctx.stroke();
-
-                    ctx.restore();
-                }
-
-                // 2. Animated Border (Rotating Dashes or Pulsing)
-                ctx.rotate(time * 0.5); // Slow rotation
-
-                ctx.strokeStyle = 'rgba(250, 204, 21, 0.6)';
-                ctx.lineWidth = 2;
-                ctx.setLineDash([15, 10]); // Longer dashes
-                ctx.beginPath();
-                ctx.arc(0, 0, currentRange, 0, Math.PI * 2);
-                ctx.stroke();
-
-                // 3. Inner Solid Ring (Clean edge)
-                ctx.setLineDash([]);
-                ctx.strokeStyle = 'rgba(250, 204, 21, 0.3)';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.arc(0, 0, currentRange - 4, 0, Math.PI * 2);
-                ctx.stroke();
-
-                ctx.restore();
-            }
-
-            ctx.save();
-
-            // === STEALTH VISUALS ===
-            if (p.stealth) {
-                if (p.teamId === human.teamId) {
-                    // Ally View: Ghostly Transparency
-                    ctx.globalAlpha = 0.5;
-                } else {
-                    // Enemy View: Glitch / Flicker
-                    // Random visibility between 0 (invisible) and 0.4 (faint)
-                    // Occasionally completely invisible for frames at a time
-                    if (Math.random() < 0.3) {
-                        ctx.globalAlpha = 0; // Completely invisible
-                    } else {
-                        ctx.globalAlpha = Math.random() * 0.4; // Faint flicker
-                    }
-                }
-            }
-
-            ctx.translate(p.pos.x, p.pos.y);
-
-            // [新增] 阵营高亮逻辑
-            if (p.teamId !== human.teamId) {
-                ctx.shadowColor = '#ef4444'; // 敌对红色光晕
-                ctx.shadowBlur = 20;
-            } else if (p.id !== human.id) {
-                ctx.shadowColor = '#3b82f6'; // 队友蓝色光晕
-                ctx.shadowBlur = 15;
-            }
-
-            // 视觉形变逻辑
-            if (p.type === CharacterType.CAT) {
-                // 1. 蓄力 - 整体缩小 (Shrink) 而不是压扁
-                if (p.catIsCharging) {
-                    const chargeTime = (performance.now() - (p.catChargeStartTime || 0)) / 1000;
-                    const chargePct = Math.min(1, chargeTime / CHAR_STATS[CharacterType.CAT].pounceMaxCharge);
-                    // 随蓄力时间从 1.0 缩小到 0.7
-                    const s = 1 - chargePct * 0.3;
-                    ctx.scale(s, s);
-                }
-                // 2. 飞扑 - 滞空放大 (Jump/Lift)
-                else if (p.isPouncing) {
-                    // 模拟升空：根据当前速度决定大小，速度越快(跳得越高)越大
-                    const speed = Utils.mag(p.vel);
-                    // 基础放大 + 速度加成，落地(速度为0)时自然恢复
-                    const scale = 1 + (speed / 30) * 0.5;
-                    ctx.scale(scale, scale);
-
-                    // 残影特效 (让飞扑更有速度感)
-                    if (Math.random() < 0.5) {
-                        state.particles.push({
-                            id: Math.random().toString(),
-                            pos: { ...p.pos },
-                            vel: { x: 0, y: 0 },
-                            life: 0.15, maxLife: 0.15,
-                            color: 'rgba(245, 208, 254, 0.4)',
-                            size: p.radius
-                        });
-                    }
-                }
-            }
-
-            // Vaulting Animation Jitter & Scale
-            if (p.isVaulting) {
-                const jitterX = (Math.random() - 0.5) * 4;
-                const jitterY = (Math.random() - 0.5) * 4;
-                ctx.translate(jitterX, jitterY);
-                const hopScale = 1.0 + Math.sin(Date.now() / 50) * 0.1;
-                ctx.scale(hopScale, hopScale);
-            }
-
-            // Invincibility Flash
-            if (p.invincibleTimer && p.invincibleTimer > 0) {
-                if (Math.floor(Date.now() / 100) % 2 === 0) ctx.globalAlpha = 0.5;
-            }
-
-            // Fallback Colors if Image fails OR Override for Status
-            // [Modified] Use unified status color system
-            const statusInfo = getStatusInfo(p);
-
-            if (statusInfo) {
-                ctx.fillStyle = statusInfo.color;
-            } else {
-                ctx.fillStyle = p.color;
-            }
-
-
-            if (p.type === CharacterType.TANK) {
-                ctx.save();
-                ctx.rotate(p.aimAngle);
-                ctx.rotate(p.aimAngle);
-                ctx.fillStyle = p.slowTimer > 0 ? '#475569' : (p.burnTimer > 0 ? '#ea580c' : ((p.charmTimer || 0) > 0 ? '#ec4899' : '#374151'));
-                ctx.fillRect(0, -8, p.radius + 20, 16);
-                ctx.restore();
-
-                if (p.tankMode === TankMode.LMG) {
-                    ctx.save();
-                    ctx.rotate(p.angle);
-                    ctx.fillStyle = '#10b981';
-                    ctx.shadowColor = '#34d399';
+                } else if (p.id !== human.id) {
+                    ctx.shadowColor = '#3b82f6'; // 队友蓝色光晕
                     ctx.shadowBlur = 15;
-                    ctx.beginPath();
-                    ctx.arc(-p.radius + 5, -12, 6, 0, Math.PI * 2);
-                    ctx.arc(-p.radius + 5, 12, 6, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.restore();
                 }
-            }
-            else if (p.type === CharacterType.WUKONG) {
-                // Wukong Staff Rendering
-                ctx.save();
-                // Visual Rise in Z-Axis (Scaling)
-                if (p.wukongChargeState === 'SMASH') {
-                    const liftPct = p.wukongChargeTime / p.wukongMaxCharge;
-                    const scale = 1 + liftPct * 0.5; // Scale up to 1.5x
-                    ctx.scale(scale, scale);
-                    // Shift Y up to simulate jump (negative Y is up in 2D top-down perspective simulation)
-                    ctx.translate(0, -liftPct * 30);
 
-                    // Shake when holding max charge
-                    if (p.wukongChargeHoldTimer > 0) {
-                        ctx.translate((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3);
+                // 视觉形变逻辑
+                if (p.type === CharacterType.CAT) {
+                    // 1. 蓄力 - 整体缩小 (Shrink) 而不是压扁
+                    if (p.catIsCharging) {
+                        const chargeTime = (performance.now() - (p.catChargeStartTime || 0)) / 1000;
+                        const chargePct = Math.min(1, chargeTime / CHAR_STATS[CharacterType.CAT].pounceMaxCharge);
+                        // 随蓄力时间从 1.0 缩小到 0.7
+                        const s = 1 - chargePct * 0.3;
+                        ctx.scale(s, s);
+                    }
+                    // 2. 飞扑 - 滞空放大 (Jump/Lift)
+                    else if (p.isPouncing) {
+                        // 模拟升空：根据当前速度决定大小，速度越快(跳得越高)越大
+                        const speed = Utils.mag(p.vel);
+                        // 基础放大 + 速度加成，落地(速度为0)时自然恢复
+                        const scale = 1 + (speed / 30) * 0.5;
+                        ctx.scale(scale, scale);
+
+                        // 残影特效 (让飞扑更有速度感)
+                        if (Math.random() < 0.5) {
+                            state.particles.push({
+                                id: Math.random().toString(),
+                                pos: { ...p.pos },
+                                vel: { x: 0, y: 0 },
+                                life: 0.15, maxLife: 0.15,
+                                color: 'rgba(245, 208, 254, 0.4)',
+                                size: p.radius
+                            });
+                        }
                     }
                 }
 
-                // Draw Active Attack Visuals MOVED to post-render loop for layering correction
+                // Vaulting Animation Jitter & Scale
+                if (p.isVaulting) {
+                    const jitterX = (Math.random() - 0.5) * 4;
+                    const jitterY = (Math.random() - 0.5) * 4;
+                    ctx.translate(jitterX, jitterY);
+                    const hopScale = 1.0 + Math.sin(Date.now() / 50) * 0.1;
+                    ctx.scale(hopScale, hopScale);
+                }
+
+                // Invincibility Flash
+                if (p.invincibleTimer && p.invincibleTimer > 0) {
+                    if (Math.floor(Date.now() / 100) % 2 === 0) ctx.globalAlpha = 0.5;
+                }
+
+                // Fallback Colors if Image fails OR Override for Status
+                // [Modified] Use unified status color system
+                const statusInfo = getStatusInfo(p);
+
+                if (statusInfo) {
+                    ctx.fillStyle = statusInfo.color;
+                } else {
+                    ctx.fillStyle = p.color;
+                }
 
 
-                const animTime = performance.now() - p.wukongLastAttackTime;
-                const animDuration = 250;
-
-                // Draw Idle/Charge Staff (Jingu Bang)
-                if (animTime >= animDuration) {
+                if (p.type === CharacterType.TANK) {
+                    ctx.save();
                     ctx.rotate(p.aimAngle);
-                    let staffOffset = 15;
+                    ctx.fillStyle = p.slowTimer > 0 ? '#475569' : (p.burnTimer > 0 ? '#ea580c' : ((p.charmTimer || 0) > 0 ? '#ec4899' : '#374151'));
+                    ctx.fillRect(0, -8, p.radius + 20, 16);
+                    ctx.restore();
 
-                    // Staff charging animation
-                    if (p.wukongChargeState === 'THRUST') {
-                        const charge = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
-                        staffOffset -= charge * 10; // Pull back
-                        if (charge > 0.8) staffOffset += (Math.random() - 0.5) * 5;
+                    if (p.tankMode === TankMode.LMG) {
+                        ctx.save();
+                        ctx.rotate(p.angle);
+                        ctx.fillStyle = '#10b981';
+                        ctx.shadowColor = '#34d399';
+                        ctx.shadowBlur = 15;
+                        ctx.beginPath();
+                        ctx.arc(-p.radius + 5, -12, 6, 0, Math.PI * 2);
+                        ctx.arc(-p.radius + 5, 12, 6, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.restore();
+                    }
+                }
+                else if (p.type === CharacterType.WUKONG) {
+                    // Wukong Staff Rendering
+                    ctx.save();
+                    // Visual Rise in Z-Axis (Scaling)
+                    if (p.wukongChargeState === 'SMASH') {
+                        const liftPct = p.wukongChargeTime / p.wukongMaxCharge;
+                        const scale = 1 + liftPct * 0.5; // Scale up to 1.5x
+                        ctx.scale(scale, scale);
+                        // Shift Y up to simulate jump (negative Y is up in 2D top-down perspective simulation)
+                        ctx.translate(0, -liftPct * 30);
+
+                        // Shake when holding max charge
+                        if (p.wukongChargeHoldTimer > 0) {
+                            ctx.translate((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3);
+                        }
                     }
 
-                    // New: Visual effect when Skill is ready
-                    if (p.skillCooldown <= 0) {
-                        ctx.shadowColor = '#facc15';
-                        ctx.shadowBlur = 15 + Math.sin(Date.now() / 150) * 8; // Pulsing glow
-                    } else {
-                        ctx.shadowBlur = 0;
+                    // Draw Active Attack Visuals MOVED to post-render loop for layering correction
+
+
+                    const animTime = performance.now() - p.wukongLastAttackTime;
+                    const animDuration = 250;
+
+                    // Draw Idle/Charge Staff (Jingu Bang)
+                    if (animTime >= animDuration) {
+                        ctx.rotate(p.aimAngle);
+                        let staffOffset = 15;
+
+                        // Staff charging animation
+                        if (p.wukongChargeState === 'THRUST') {
+                            const charge = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
+                            staffOffset -= charge * 10; // Pull back
+                            if (charge > 0.8) staffOffset += (Math.random() - 0.5) * 5;
+                        }
+
+                        // New: Visual effect when Skill is ready
+                        if (p.skillCooldown <= 0) {
+                            ctx.shadowColor = '#facc15';
+                            ctx.shadowBlur = 15 + Math.sin(Date.now() / 150) * 8; // Pulsing glow
+                        } else {
+                            ctx.shadowBlur = 0;
+                        }
+
+                        ctx.fillStyle = '#a16207'; // Bronze/Gold dark
+                        ctx.fillRect(staffOffset, -4, 50, 8); // Handle
+                        ctx.fillStyle = '#facc15'; // Gold tip
+                        ctx.fillRect(staffOffset + 50, -6, 15, 12);
+                        ctx.fillRect(staffOffset - 5, -6, 5, 12);
                     }
 
-                    ctx.fillStyle = '#a16207'; // Bronze/Gold dark
-                    ctx.fillRect(staffOffset, -4, 50, 8); // Handle
-                    ctx.fillStyle = '#facc15'; // Gold tip
-                    ctx.fillRect(staffOffset + 50, -6, 15, 12);
-                    ctx.fillRect(staffOffset - 5, -6, 5, 12);
+                    ctx.restore();
+                } else if (p.type === CharacterType.CAT) {
+                    // --- RENDER CAT ---
+                    // [Modified] Status Color Support
+                    const statusInfo = getStatusInfo(p);
+                    const baseColor = statusInfo ? statusInfo.color : '#f5d0fe'; // fuchsia-200 or status
+                    const spotColor = statusInfo ? Utils.adjustColor(statusInfo.color, -30) : '#a855f7'; // darker version for spots
+
+                    // Draw Body
+                    ctx.rotate(p.angle);
+                    ctx.fillStyle = baseColor;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, p.radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Draw Calico Spots
+                    ctx.fillStyle = spotColor;
+                    ctx.beginPath();
+                    ctx.arc(-8, -10, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#1f2937'; // gray-800 eyes always dark
+                    ctx.beginPath();
+                    ctx.arc(8, 12, 6, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Draw Tail (Wagging)
+                    const tailWag = Math.sin(Date.now() / 200) * 0.5;
+                    ctx.strokeStyle = baseColor;
+                    ctx.lineWidth = 8;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(-p.radius, 0);
+                    ctx.quadraticCurveTo(-p.radius - 20, 0, -p.radius - 25, tailWag * 20);
+                    ctx.stroke();
+
+                    // Rotate to Aim Direction for Ears & Face
+                    ctx.rotate(-p.angle); // Reset body rotation
+                    ctx.rotate(p.aimAngle); // Rotate to aim
+
+                    // Ears - Match base color
+                    ctx.fillStyle = baseColor;
+                    ctx.beginPath(); ctx.moveTo(5, -p.radius + 5); ctx.lineTo(15, -p.radius - 10); ctx.lineTo(25, -p.radius + 10); ctx.fill(); // Right Ear
+                    ctx.beginPath(); ctx.moveTo(5, p.radius - 5); ctx.lineTo(15, p.radius + 10); ctx.lineTo(25, p.radius - 10); ctx.fill(); // Left Ear
+
+                    // Inner Ears (Pink usually, but maybe match status logic?)
+                    // Let's keep them pinkish unless status is very dark?
+                    // Actually if frozen/stone, inner ear should probably change too.
+                    // Let's use a lighter version of baseColor for inner ears if status is present.
+                    ctx.fillStyle = statusInfo ? Utils.adjustColor(statusInfo.color, 40) : '#f9a8d4';
+                    ctx.beginPath(); ctx.moveTo(8, -p.radius + 6); ctx.lineTo(15, -p.radius - 6); ctx.lineTo(22, -p.radius + 9); ctx.fill();
+                    ctx.beginPath(); ctx.moveTo(8, p.radius - 6); ctx.lineTo(15, p.radius + 6); ctx.lineTo(22, p.radius - 9); ctx.fill();
+
+                    // Whiskers
+                    ctx.strokeStyle = '#4b5563';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath(); ctx.moveTo(p.radius, -5); ctx.lineTo(p.radius + 15, -10); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(p.radius, 5); ctx.lineTo(p.radius + 15, 10); ctx.stroke();
+
+                    ctx.restore();
+                    // Skip default ball render for cat
+                    return;
+                } else if (p.type === CharacterType.MAGIC) {
+                    // --- RENDER MAGIC BALL & WAND ---
+                    // Note: Context is already translated to p.pos by outer loop
+
+                    // 1. Draw Ball Body
+                    const statusInfo = getStatusInfo(p);
+                    if (statusInfo) ctx.fillStyle = statusInfo.color;
+                    else ctx.fillStyle = p.color;
+
+
+                    ctx.beginPath();
+                    ctx.arc(0, 0, p.radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 2. Draw Gloss (Highlight)
+                    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+                    ctx.beginPath();
+                    ctx.arc(-p.radius / 3, -p.radius / 3, p.radius / 3, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 3. Draw Wand (Aligned with Aim)
+                    ctx.save(); // Save rotation
+
+                    // Add idle sway
+                    const swayOffset = Math.sin(Date.now() / 800) * 0.15; // Slow breathing sway (~8 deg)
+                    ctx.rotate(p.aimAngle + swayOffset);
+
+                    const wandLen = 32;
+                    const wandWidth = 6;
+
+                    // Wand Stick
+                    // Use a darker handle
+                    ctx.fillStyle = '#475569'; // Dark handle
+                    ctx.fillRect(p.radius - 5, -wandWidth / 2, wandLen, wandWidth);
+
+                    // Wand Tip (Glowing)
+                    // Use the exact current theme color if possible, or fallback
+                    ctx.fillStyle = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e'; // Match projectile colors
+                    ctx.shadowColor = ctx.fillStyle;
+                    ctx.shadowBlur = 10;
+                    ctx.fillRect(p.radius + wandLen - 8, -(wandWidth + 2) / 2, 8, wandWidth + 2);
+
+                    // Restore rotation
+                    ctx.restore();
+
+                    // Restore OUTER context (Translation)
+                    ctx.restore();
+
+                    if (p.invincibleTimer && p.invincibleTimer > 0) ctx.globalAlpha = 1;
+                    return;
                 }
 
-                ctx.restore();
-            } else if (p.type === CharacterType.CAT) {
-                // --- RENDER CAT ---
-                // [Modified] Status Color Support
-                const statusInfo = getStatusInfo(p);
-                const baseColor = statusInfo ? statusInfo.color : '#f5d0fe'; // fuchsia-200 or status
-                const spotColor = statusInfo ? Utils.adjustColor(statusInfo.color, -30) : '#a855f7'; // darker version for spots
-
-                // Draw Body
+                // DEFAULT BALL RENDER (For Pyro, Tank, Wukong body)
+                ctx.save(); // [Isolation] Rotate only body features
                 ctx.rotate(p.angle);
-                ctx.fillStyle = baseColor;
-                ctx.beginPath();
-                ctx.arc(0, 0, p.radius, 0, Math.PI * 2);
-                ctx.fill();
 
-                // Draw Calico Spots
-                ctx.fillStyle = spotColor;
-                ctx.beginPath();
-                ctx.arc(-8, -10, 8, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.fillStyle = '#1f2937'; // gray-800 eyes always dark
-                ctx.beginPath();
-                ctx.arc(8, 12, 6, 0, Math.PI * 2);
-                ctx.fill();
+                // [Modified] Use unified status color system
+                // This ensures ANY status (Stun, Fear, Silence, etc.) overrides the default color
+                // statusInfo is already defined at start of loop (line ~4882)
 
-                // Draw Tail (Wagging)
-                const tailWag = Math.sin(Date.now() / 200) * 0.5;
-                ctx.strokeStyle = baseColor;
-                ctx.lineWidth = 8;
-                ctx.lineCap = 'round';
-                ctx.beginPath();
-                ctx.moveTo(-p.radius, 0);
-                ctx.quadraticCurveTo(-p.radius - 20, 0, -p.radius - 25, tailWag * 20);
-                ctx.stroke();
+                // Special Case: Coach Ball Rainbow Effect overrides standard colors UNLESS it has a status?
+                // User requirement: "for other balls... receive status... correctly change color"
+                // Usually status color > innate color.
+                // But Coach has a special visual. Let's keep Coach special visual as "default" (no status)
+                // and if it has a status, show status color.
 
-                // Rotate to Aim Direction for Ears & Face
-                ctx.rotate(-p.angle); // Reset body rotation
-                ctx.rotate(p.aimAngle); // Rotate to aim
+                if (statusInfo) {
+                    ctx.fillStyle = statusInfo.color;
+                } else if (p.type === CharacterType.COACH) {
+                    // Rainbow Effect for Coach Ball
+                    const time = Date.now() / 15; // Speed of color cycle
+                    const hue = time % 360;
+                    ctx.fillStyle = `hsl(${hue}, 90%, 70%)`;
 
-                // Ears - Match base color
-                ctx.fillStyle = baseColor;
-                ctx.beginPath(); ctx.moveTo(5, -p.radius + 5); ctx.lineTo(15, -p.radius - 10); ctx.lineTo(25, -p.radius + 10); ctx.fill(); // Right Ear
-                ctx.beginPath(); ctx.moveTo(5, p.radius - 5); ctx.lineTo(15, p.radius + 10); ctx.lineTo(25, p.radius - 10); ctx.fill(); // Left Ear
-
-                // Inner Ears (Pink usually, but maybe match status logic?)
-                // Let's keep them pinkish unless status is very dark?
-                // Actually if frozen/stone, inner ear should probably change too.
-                // Let's use a lighter version of baseColor for inner ears if status is present.
-                ctx.fillStyle = statusInfo ? Utils.adjustColor(statusInfo.color, 40) : '#f9a8d4';
-                ctx.beginPath(); ctx.moveTo(8, -p.radius + 6); ctx.lineTo(15, -p.radius - 6); ctx.lineTo(22, -p.radius + 9); ctx.fill();
-                ctx.beginPath(); ctx.moveTo(8, p.radius - 6); ctx.lineTo(15, p.radius + 6); ctx.lineTo(22, p.radius - 9); ctx.fill();
-
-                // Whiskers
-                ctx.strokeStyle = '#4b5563';
-                ctx.lineWidth = 1;
-                ctx.beginPath(); ctx.moveTo(p.radius, -5); ctx.lineTo(p.radius + 15, -10); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(p.radius, 5); ctx.lineTo(p.radius + 15, 10); ctx.stroke();
-
-                ctx.restore();
-                // Skip default ball render for cat
-                return;
-            } else if (p.type === CharacterType.MAGIC) {
-                // --- RENDER MAGIC BALL & WAND ---
-                // Note: Context is already translated to p.pos by outer loop
-
-                // 1. Draw Ball Body
-                const statusInfo = getStatusInfo(p);
-                if (statusInfo) ctx.fillStyle = statusInfo.color;
-                else ctx.fillStyle = p.color;
-
+                    // Add a magical glow
+                    ctx.shadowColor = `hsl(${hue}, 90%, 70%)`;
+                    ctx.shadowBlur = 20;
+                } else {
+                    ctx.fillStyle = p.color;
+                }
 
                 ctx.beginPath();
                 ctx.arc(0, 0, p.radius, 0, Math.PI * 2);
                 ctx.fill();
 
-                // 2. Draw Gloss (Highlight)
+                // Wukong Headband (only if not image)
+                if (p.type === CharacterType.WUKONG) {
+                    // [Modified] Headband color should also reflect status
+                    if (statusInfo) {
+                        // Use a slightly lighter/different shade of the status color for the ring
+                        ctx.strokeStyle = statusInfo.color;
+                        ctx.globalAlpha = 0.8; // Make it blend slightly
+                    } else {
+                        ctx.strokeStyle = '#facc15';
+                        ctx.globalAlpha = 1.0;
+                    }
+
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, p.radius - 2, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.globalAlpha = 1.0; // Reset alpha
+                }
+                ctx.restore(); // [End Isolation] Back to non-rotated (but translated)
+
+                // Gloss (Highlight) - Rendered in fixed orientation (Top-Left Light Source)
                 ctx.fillStyle = 'rgba(255,255,255,0.2)';
                 ctx.beginPath();
                 ctx.arc(-p.radius / 3, -p.radius / 3, p.radius / 3, 0, Math.PI * 2);
                 ctx.fill();
 
-                // 3. Draw Wand (Aligned with Aim)
-                ctx.save(); // Save rotation
-
-                // Add idle sway
-                const swayOffset = Math.sin(Date.now() / 800) * 0.15; // Slow breathing sway (~8 deg)
-                ctx.rotate(p.aimAngle + swayOffset);
-
-                const wandLen = 32;
-                const wandWidth = 6;
-
-                // Wand Stick
-                // Use a darker handle
-                ctx.fillStyle = '#475569'; // Dark handle
-                ctx.fillRect(p.radius - 5, -wandWidth / 2, wandLen, wandWidth);
-
-                // Wand Tip (Glowing)
-                // Use the exact current theme color if possible, or fallback
-                ctx.fillStyle = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e'; // Match projectile colors
-                ctx.shadowColor = ctx.fillStyle;
-                ctx.shadowBlur = 10;
-                ctx.fillRect(p.radius + wandLen - 8, -(wandWidth + 2) / 2, 8, wandWidth + 2);
-
-                // Restore rotation
                 ctx.restore();
-
-                // Restore OUTER context (Translation)
-                ctx.restore();
-
                 if (p.invincibleTimer && p.invincibleTimer > 0) ctx.globalAlpha = 1;
-                return;
-            }
 
-            // DEFAULT BALL RENDER (For Pyro, Tank, Wukong body)
-            ctx.save(); // [Isolation] Rotate only body features
-            ctx.rotate(p.angle);
-
-            // [Modified] Use unified status color system
-            // This ensures ANY status (Stun, Fear, Silence, etc.) overrides the default color
-            // statusInfo is already defined at start of loop (line ~4882)
-
-            // Special Case: Coach Ball Rainbow Effect overrides standard colors UNLESS it has a status?
-            // User requirement: "for other balls... receive status... correctly change color"
-            // Usually status color > innate color.
-            // But Coach has a special visual. Let's keep Coach special visual as "default" (no status)
-            // and if it has a status, show status color.
-
-            if (statusInfo) {
-                ctx.fillStyle = statusInfo.color;
-            } else if (p.type === CharacterType.COACH) {
-                // Rainbow Effect for Coach Ball
-                const time = Date.now() / 15; // Speed of color cycle
-                const hue = time % 360;
-                ctx.fillStyle = `hsl(${hue}, 90%, 70%)`;
-
-                // Add a magical glow
-                ctx.shadowColor = `hsl(${hue}, 90%, 70%)`;
-                ctx.shadowBlur = 20;
-            } else {
-                ctx.fillStyle = p.color;
-            }
-
-            ctx.beginPath();
-            ctx.arc(0, 0, p.radius, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Wukong Headband (only if not image)
-            if (p.type === CharacterType.WUKONG) {
-                // [Modified] Headband color should also reflect status
-                if (statusInfo) {
-                    // Use a slightly lighter/different shade of the status color for the ring
-                    ctx.strokeStyle = statusInfo.color;
-                    ctx.globalAlpha = 0.8; // Make it blend slightly
-                } else {
-                    ctx.strokeStyle = '#facc15';
-                    ctx.globalAlpha = 1.0;
-                }
-
-                ctx.lineWidth = 3;
-                ctx.beginPath();
-                ctx.arc(0, 0, p.radius - 2, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.globalAlpha = 1.0; // Reset alpha
-            }
-            ctx.restore(); // [End Isolation] Back to non-rotated (but translated)
-
-            // Gloss (Highlight) - Rendered in fixed orientation (Top-Left Light Source)
-            ctx.fillStyle = 'rgba(255,255,255,0.2)';
-            ctx.beginPath();
-            ctx.arc(-p.radius / 3, -p.radius / 3, p.radius / 3, 0, Math.PI * 2);
-            ctx.fill();
-
-            ctx.restore();
-            if (p.invincibleTimer && p.invincibleTimer > 0) ctx.globalAlpha = 1;
-
-            // Status Overlays
-            if (p.type === CharacterType.PYRO && p.skillCooldown <= 0) {
-                const time = Date.now() / 200;
-                const orbitR = p.radius + 15;
-                for (let i = 5; i >= 1; i--) {
-                    const lag = i * 0.15;
-                    const trailTime = time - lag;
-                    const tx = Math.cos(trailTime) * orbitR;
-                    const ty = Math.sin(trailTime) * orbitR;
-                    const scale = 1 - (i / 6);
-                    const alpha = (1 - (i / 6)) * 0.5;
-                    ctx.save();
-                    ctx.translate(p.pos.x + tx, p.pos.y + ty);
-                    ctx.fillStyle = `rgba(249, 115, 22, ${alpha})`;
-                    ctx.beginPath();
-                    ctx.arc(0, 0, 5 * scale, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.restore();
-                }
-                const ox = Math.cos(time) * orbitR;
-                const oy = Math.sin(time) * orbitR;
-                ctx.save();
-                ctx.translate(p.pos.x + ox, p.pos.y + oy);
-                ctx.fillStyle = '#f97316';
-                ctx.beginPath();
-                ctx.arc(0, 0, 6, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.shadowColor = '#ef4444';
-                ctx.shadowBlur = 10;
-                ctx.strokeStyle = '#fca5a5';
-                ctx.lineWidth = 1;
-                ctx.stroke();
-                ctx.restore();
-            }
-        });
-
-        state.floatingTexts.forEach(t => {
-            const alpha = Math.max(0, t.life / t.maxLife);
-            if (alpha < 0.01) return;
-            ctx.save();
-            ctx.globalAlpha = alpha;
-            ctx.fillStyle = t.color;
-            ctx.shadowBlur = 0;
-            ctx.font = 'bold 16px sans-serif';
-            ctx.fillText(t.text, t.pos.x - 20, t.pos.y);
-            ctx.restore();
-        });
-
-        // [High Priority Render Layer] Wukong Attacks (Big Cudgel)
-        // Rendered AFTER all players to ensure it appears on top of other balls and terrain
-        state.players.forEach(p => {
-            if (p.type !== CharacterType.WUKONG || p.isDead) return;
-
-            const animTime = performance.now() - p.wukongLastAttackTime;
-            const animDuration = 250;
-
-            if (animTime < animDuration && p.wukongLastAttackType !== 'NONE') {
-                ctx.save();
-                ctx.translate(p.pos.x, p.pos.y);
-
-                // Re-apply Z-axis lift visual if in Smash Charge
-                if (p.wukongChargeState === 'SMASH') {
-                    const liftPct = p.wukongChargeTime / p.wukongMaxCharge;
-                    const scale = 1 + liftPct * 0.5;
-                    ctx.scale(scale, scale);
-                    ctx.translate(0, -liftPct * 30);
-                    if (p.wukongChargeHoldTimer > 0) {
-                        ctx.translate((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3);
-                    }
-                }
-
-                ctx.rotate(p.aimAngle);
-                const progress = animTime / animDuration;
-
-                if (p.wukongLastAttackType === 'COMBO_1' || p.wukongLastAttackType === 'COMBO_2') {
-                    // Dynamic Swing Animation
-                    const swingArc = Math.PI / 1.5; // 120 degrees
-                    // Combo 1: -60 to +60. Combo 2: +60 to -60.
-                    const startAngle = p.wukongLastAttackType === 'COMBO_1' ? -swingArc / 2 : swingArc / 2;
-                    const endAngle = -startAngle;
-
-                    // Easing function for visual pop
-                    const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
-                    const currentRot = startAngle + (endAngle - startAngle) * easeOut(progress);
-
-                    // Draw Trail (Ghosting)
-                    for (let i = 1; i <= 3; i++) {
-                        const trailLag = i * 0.05;
-                        if (progress > trailLag) {
-                            const trailRot = startAngle + (endAngle - startAngle) * easeOut(progress - trailLag);
-                            ctx.save();
-                            ctx.rotate(trailRot);
-                            ctx.fillStyle = `rgba(250, 204, 21, ${0.3 / i})`;
-                            ctx.fillRect(0, -4, 110, 8);
-                            ctx.restore();
-                        }
-                    }
-
-                    // Draw Main Staff
-                    ctx.save();
-                    ctx.rotate(currentRot);
-                    ctx.fillStyle = '#a16207'; // Stick color
-                    ctx.fillRect(0, -5, 110, 10);
-                    ctx.fillStyle = '#facc15'; // Gold Tip
-                    ctx.fillRect(90, -7, 20, 14);
-                    // Swipe Streak
-                    ctx.fillStyle = `rgba(254, 240, 138, ${0.5 * (1 - progress)})`;
-                    ctx.beginPath();
-                    ctx.rect(20, -20, 90, 40); // Simple streak, or could use arc
-                    ctx.fill();
-                    ctx.restore();
-
-                } else if (p.wukongLastAttackType === 'SKILL_SMASH') {
-                    // ENHANCED SMASH ANIMATION (For Skill only)
-                    const smashProg = animTime / animDuration;
-                    const stats = CHAR_STATS[CharacterType.WUKONG];
-                    // Retrieve stored charge pct for correct visual length
-                    const range = stats.smashMinRange + (stats.smashMaxRange - stats.smashMinRange) * p.wukongLastChargePct;
-                    const width = stats.smashWidthMin + (stats.smashWidthMax - stats.smashWidthMin) * p.wukongLastChargePct;
-
-                    // 1. Smear Effect (Ghosting Trail)
-                    if (smashProg < 0.6) {
+                // Status Overlays
+                if (p.type === CharacterType.PYRO && p.skillCooldown <= 0) {
+                    const time = Date.now() / 200;
+                    const orbitR = p.radius + 15;
+                    for (let i = 5; i >= 1; i--) {
+                        const lag = i * 0.15;
+                        const trailTime = time - lag;
+                        const tx = Math.cos(trailTime) * orbitR;
+                        const ty = Math.sin(trailTime) * orbitR;
+                        const scale = 1 - (i / 6);
+                        const alpha = (1 - (i / 6)) * 0.5;
                         ctx.save();
-                        const fade = 1 - (smashProg / 0.6);
-                        ctx.fillStyle = `rgba(254, 240, 138, ${fade * 0.4})`;
-                        ctx.fillRect(0, -width / 2, range, width);
-                        ctx.restore();
-                    }
-
-                    // 2. Impact Flash (White Highlight) at the start
-                    if (smashProg < 0.2) {
-                        ctx.save();
-                        ctx.shadowBlur = 30;
-                        ctx.shadowColor = 'white';
-                        ctx.fillStyle = '#ffffff';
-                        ctx.fillRect(10, -width / 4, range, width / 2);
-                        ctx.restore();
-                    } else {
-                        // 3. Main Staff (Extended)
-                        const stickWidth = 20;
-
-                        ctx.shadowColor = '#fef08a';
-                        ctx.shadowBlur = 20;
-
-                        // Main Body - Aligned to 0 to match hitbox
-                        ctx.fillStyle = '#b45309'; // Darker gold/bronze
-                        ctx.fillRect(0, -stickWidth / 2, range, stickWidth);
-
-                        // Tip (Gold Cap)
-                        ctx.fillStyle = '#fef08a';
-                        ctx.fillRect(range, -(stickWidth / 2 + 4), 30, stickWidth + 8);
-
-                        // 4. [New] Circular Shockwave Visual
-                        const waveAlpha = 1 - smashProg;
-                        ctx.save();
-                        ctx.rotate(-p.aimAngle); // Draw shockwave relative to player orientation
-                        ctx.strokeStyle = `rgba(254, 240, 138, ${waveAlpha * 0.5})`;
-                        ctx.lineWidth = 4;
+                        ctx.translate(p.pos.x + tx, p.pos.y + ty);
+                        ctx.fillStyle = `rgba(249, 115, 22, ${alpha})`;
                         ctx.beginPath();
-                        ctx.arc(0, 0, range * smashProg, 0, Math.PI * 2);
-                        ctx.stroke();
-                        ctx.restore();
-                    }
-
-                } else if (p.wukongLastAttackType === 'COMBO_SMASH') {
-                    // NORMAL SMASH ANIMATION (For Combo 3rd hit - Fixed size, no huge scaling)
-                    const smashProg = animTime / animDuration;
-                    const range = 180; // Fixed range for combo finisher
-                    const width = 40;  // Fixed width
-
-                    // 1. Smear Effect
-                    if (smashProg < 0.6) {
-                        ctx.save();
-                        const fade = 1 - (smashProg / 0.6);
-                        ctx.fillStyle = `rgba(250, 204, 21, ${fade * 0.3})`;
-                        ctx.fillRect(0, -width / 2, range, width);
-                        ctx.restore();
-                    }
-
-                    // 2. Staff Animation (Slamming down visual)
-                    const stickWidth = 14;
-                    ctx.fillStyle = '#a16207';
-                    ctx.fillRect(10, -stickWidth / 2, range, stickWidth);
-                    ctx.fillStyle = '#facc15';
-                    ctx.fillRect(range, -(stickWidth / 2 + 2), 20, stickWidth + 4);
-
-                } else if (p.wukongLastAttackType === 'THRUST') {
-                    // ENHANCED THRUST ANIMATION
-                    const stats = CHAR_STATS[CharacterType.WUKONG];
-                    // Recalculate range based on saved state
-                    const range = 100 + (stats.thrustMaxRange - 100) * p.wukongLastChargePct;
-                    const thrustProg = animTime / animDuration;
-
-                    // 1. Smear Effect (Speed lines / Conical thrust trail)
-                    if (thrustProg < 0.5) {
-                        const fade = 1 - (thrustProg / 0.5);
-                        ctx.save();
-
-                        // Airflow lines (Side streaks)
-                        ctx.lineWidth = 2;
-                        ctx.strokeStyle = `rgba(255, 255, 255, ${fade * 0.6})`;
-
-                        ctx.beginPath();
-                        ctx.moveTo(30, -12);
-                        ctx.lineTo(range * 0.9, -8);
-                        ctx.stroke();
-
-                        ctx.beginPath();
-                        ctx.moveTo(30, 12);
-                        ctx.lineTo(range * 0.9, 8);
-                        ctx.stroke();
-
-                        // Central Blur
-                        ctx.fillStyle = `rgba(254, 240, 138, ${fade * 0.3})`;
-                        ctx.beginPath();
-                        ctx.moveTo(10, -10);
-                        ctx.lineTo(range + 30, -5);
-                        ctx.lineTo(range + 30, 5);
-                        ctx.lineTo(10, 10);
+                        ctx.arc(0, 0, 5 * scale, 0, Math.PI * 2);
                         ctx.fill();
                         ctx.restore();
                     }
+                    const ox = Math.cos(time) * orbitR;
+                    const oy = Math.sin(time) * orbitR;
+                    ctx.save();
+                    ctx.translate(p.pos.x + ox, p.pos.y + oy);
+                    ctx.fillStyle = '#f97316';
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 6, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowColor = '#ef4444';
+                    ctx.shadowBlur = 10;
+                    ctx.strokeStyle = '#fca5a5';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            });
 
-                    // 2. Flash at the start (Explosion from handle)
-                    if (thrustProg < 0.15) {
-                        ctx.save();
-                        ctx.shadowBlur = 25;
-                        ctx.shadowColor = 'white';
-                        ctx.fillStyle = '#ffffff';
-                        // Flash covers full length now
-                        ctx.fillRect(10, -10, range + 20, 20);
-                        ctx.restore();
+            state.floatingTexts.forEach(t => {
+                const alpha = Math.max(0, t.life / t.maxLife);
+                if (alpha < 0.01) return;
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = t.color;
+                ctx.shadowBlur = 0;
+                ctx.font = 'bold 16px sans-serif';
+                ctx.fillText(t.text, t.pos.x - 20, t.pos.y);
+                ctx.restore();
+            });
+
+            // [High Priority Render Layer] Wukong Attacks (Big Cudgel)
+            // Rendered AFTER all players to ensure it appears on top of other balls and terrain
+            state.players.forEach(p => {
+                if (p.type !== CharacterType.WUKONG || p.isDead) return;
+
+                const animTime = performance.now() - p.wukongLastAttackTime;
+                const animDuration = 250;
+
+                if (animTime < animDuration && p.wukongLastAttackType !== 'NONE') {
+                    ctx.save();
+                    ctx.translate(p.pos.x, p.pos.y);
+
+                    // Re-apply Z-axis lift visual if in Smash Charge
+                    if (p.wukongChargeState === 'SMASH') {
+                        const liftPct = p.wukongChargeTime / p.wukongMaxCharge;
+                        const scale = 1 + liftPct * 0.5;
+                        ctx.scale(scale, scale);
+                        ctx.translate(0, -liftPct * 30);
+                        if (p.wukongChargeHoldTimer > 0) {
+                            ctx.translate((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3);
+                        }
                     }
 
-                    // 3. Main Stick Body
-                    ctx.fillStyle = '#a16207';
-                    ctx.fillRect(20, -6, range, 12);
+                    ctx.rotate(p.aimAngle);
+                    const progress = animTime / animDuration;
 
-                    // 4. Gold Tip (Highlight)
-                    ctx.shadowColor = '#fef08a';
-                    ctx.shadowBlur = 10;
-                    ctx.fillStyle = '#facc15';
-                    ctx.fillRect(range + 20, -8, 20, 16); // Tip
+                    if (p.wukongLastAttackType === 'COMBO_1' || p.wukongLastAttackType === 'COMBO_2') {
+                        // Dynamic Swing Animation
+                        const swingArc = Math.PI / 1.5; // 120 degrees
+                        // Combo 1: -60 to +60. Combo 2: +60 to -60.
+                        const startAngle = p.wukongLastAttackType === 'COMBO_1' ? -swingArc / 2 : swingArc / 2;
+                        const endAngle = -startAngle;
+
+                        // Easing function for visual pop
+                        const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+                        const currentRot = startAngle + (endAngle - startAngle) * easeOut(progress);
+
+                        // Draw Trail (Ghosting)
+                        for (let i = 1; i <= 3; i++) {
+                            const trailLag = i * 0.05;
+                            if (progress > trailLag) {
+                                const trailRot = startAngle + (endAngle - startAngle) * easeOut(progress - trailLag);
+                                ctx.save();
+                                ctx.rotate(trailRot);
+                                ctx.fillStyle = `rgba(250, 204, 21, ${0.3 / i})`;
+                                ctx.fillRect(0, -4, 110, 8);
+                                ctx.restore();
+                            }
+                        }
+
+                        // Draw Main Staff
+                        ctx.save();
+                        ctx.rotate(currentRot);
+                        ctx.fillStyle = '#a16207'; // Stick color
+                        ctx.fillRect(0, -5, 110, 10);
+                        ctx.fillStyle = '#facc15'; // Gold Tip
+                        ctx.fillRect(90, -7, 20, 14);
+                        // Swipe Streak
+                        ctx.fillStyle = `rgba(254, 240, 138, ${0.5 * (1 - progress)})`;
+                        ctx.beginPath();
+                        ctx.rect(20, -20, 90, 40); // Simple streak, or could use arc
+                        ctx.fill();
+                        ctx.restore();
+
+                    } else if (p.wukongLastAttackType === 'SKILL_SMASH') {
+                        // ENHANCED SMASH ANIMATION (For Skill only)
+                        const smashProg = animTime / animDuration;
+                        const stats = CHAR_STATS[CharacterType.WUKONG];
+                        // Retrieve stored charge pct for correct visual length
+                        const range = stats.smashMinRange + (stats.smashMaxRange - stats.smashMinRange) * p.wukongLastChargePct;
+                        const width = stats.smashWidthMin + (stats.smashWidthMax - stats.smashWidthMin) * p.wukongLastChargePct;
+
+                        // 1. Smear Effect (Ghosting Trail)
+                        if (smashProg < 0.6) {
+                            ctx.save();
+                            const fade = 1 - (smashProg / 0.6);
+                            ctx.fillStyle = `rgba(254, 240, 138, ${fade * 0.4})`;
+                            ctx.fillRect(0, -width / 2, range, width);
+                            ctx.restore();
+                        }
+
+                        // 2. Impact Flash (White Highlight) at the start
+                        if (smashProg < 0.2) {
+                            ctx.save();
+                            ctx.shadowBlur = 30;
+                            ctx.shadowColor = 'white';
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(10, -width / 4, range, width / 2);
+                            ctx.restore();
+                        } else {
+                            // 3. Main Staff (Extended)
+                            const stickWidth = 20;
+
+                            ctx.shadowColor = '#fef08a';
+                            ctx.shadowBlur = 20;
+
+                            // Main Body - Aligned to 0 to match hitbox
+                            ctx.fillStyle = '#b45309'; // Darker gold/bronze
+                            ctx.fillRect(0, -stickWidth / 2, range, stickWidth);
+
+                            // Tip (Gold Cap)
+                            ctx.fillStyle = '#fef08a';
+                            ctx.fillRect(range, -(stickWidth / 2 + 4), 30, stickWidth + 8);
+
+                            // 4. [New] Circular Shockwave Visual
+                            const waveAlpha = 1 - smashProg;
+                            ctx.save();
+                            ctx.rotate(-p.aimAngle); // Draw shockwave relative to player orientation
+                            ctx.strokeStyle = `rgba(254, 240, 138, ${waveAlpha * 0.5})`;
+                            ctx.lineWidth = 4;
+                            ctx.beginPath();
+                            ctx.arc(0, 0, range * smashProg, 0, Math.PI * 2);
+                            ctx.stroke();
+                            ctx.restore();
+                        }
+
+                    } else if (p.wukongLastAttackType === 'COMBO_SMASH') {
+                        // NORMAL SMASH ANIMATION (For Combo 3rd hit - Fixed size, no huge scaling)
+                        const smashProg = animTime / animDuration;
+                        const range = 180; // Fixed range for combo finisher
+                        const width = 40;  // Fixed width
+
+                        // 1. Smear Effect
+                        if (smashProg < 0.6) {
+                            ctx.save();
+                            const fade = 1 - (smashProg / 0.6);
+                            ctx.fillStyle = `rgba(250, 204, 21, ${fade * 0.3})`;
+                            ctx.fillRect(0, -width / 2, range, width);
+                            ctx.restore();
+                        }
+
+                        // 2. Staff Animation (Slamming down visual)
+                        const stickWidth = 14;
+                        ctx.fillStyle = '#a16207';
+                        ctx.fillRect(10, -stickWidth / 2, range, stickWidth);
+                        ctx.fillStyle = '#facc15';
+                        ctx.fillRect(range, -(stickWidth / 2 + 2), 20, stickWidth + 4);
+
+                    } else if (p.wukongLastAttackType === 'THRUST') {
+                        // ENHANCED THRUST ANIMATION
+                        const stats = CHAR_STATS[CharacterType.WUKONG];
+                        // Recalculate range based on saved state
+                        const range = 100 + (stats.thrustMaxRange - 100) * p.wukongLastChargePct;
+                        const thrustProg = animTime / animDuration;
+
+                        // 1. Smear Effect (Speed lines / Conical thrust trail)
+                        if (thrustProg < 0.5) {
+                            const fade = 1 - (thrustProg / 0.5);
+                            ctx.save();
+
+                            // Airflow lines (Side streaks)
+                            ctx.lineWidth = 2;
+                            ctx.strokeStyle = `rgba(255, 255, 255, ${fade * 0.6})`;
+
+                            ctx.beginPath();
+                            ctx.moveTo(30, -12);
+                            ctx.lineTo(range * 0.9, -8);
+                            ctx.stroke();
+
+                            ctx.beginPath();
+                            ctx.moveTo(30, 12);
+                            ctx.lineTo(range * 0.9, 8);
+                            ctx.stroke();
+
+                            // Central Blur
+                            ctx.fillStyle = `rgba(254, 240, 138, ${fade * 0.3})`;
+                            ctx.beginPath();
+                            ctx.moveTo(10, -10);
+                            ctx.lineTo(range + 30, -5);
+                            ctx.lineTo(range + 30, 5);
+                            ctx.lineTo(10, 10);
+                            ctx.fill();
+                            ctx.restore();
+                        }
+
+                        // 2. Flash at the start (Explosion from handle)
+                        if (thrustProg < 0.15) {
+                            ctx.save();
+                            ctx.shadowBlur = 25;
+                            ctx.shadowColor = 'white';
+                            ctx.fillStyle = '#ffffff';
+                            // Flash covers full length now
+                            ctx.fillRect(10, -10, range + 20, 20);
+                            ctx.restore();
+                        }
+
+                        // 3. Main Stick Body
+                        ctx.fillStyle = '#a16207';
+                        ctx.fillRect(20, -6, range, 12);
+
+                        // 4. Gold Tip (Highlight)
+                        ctx.shadowColor = '#fef08a';
+                        ctx.shadowBlur = 10;
+                        ctx.fillStyle = '#facc15';
+                        ctx.fillRect(range + 20, -8, 20, 16); // Tip
+                    }
+
+                    ctx.restore();
                 }
-
-                ctx.restore();
-            }
-        });
+            });
 
 
-        // [High Priority Render Layer 2] Cat Scooper Smash (Giant Shovel)
-        // Rendered AFTER Wukong's staff to ensure it's also on top of everything
-        state.groundEffects.forEach(g => {
-            if (g.type === 'SCOOPER_SMASH') {
-                // Shadow
-                const alpha = g.life / g.maxLife;
-                ctx.fillStyle = `rgba(0,0,0,${alpha * 0.5})`;
-                ctx.beginPath();
-                ctx.ellipse(g.pos.x, g.pos.y, g.radius, g.radius * 0.8, 0, 0, Math.PI * 2);
-                ctx.fill();
-
-                // Giant Scooper
-                ctx.save();
-                ctx.translate(g.pos.x, g.pos.y - 100 * alpha); // Fall down effect
-                ctx.rotate(Math.PI / 4);
-                // Draw Shovel
-                ctx.fillStyle = '#b91c1c'; // Red handle
-                ctx.fillRect(-10, -200, 20, 150);
-                ctx.fillStyle = '#ef4444'; // Red scoop
-                ctx.beginPath();
-                ctx.moveTo(-60, -50);
-                ctx.lineTo(60, -50);
-                ctx.lineTo(50, 50);
-                ctx.lineTo(-50, 50);
-                ctx.closePath();
-                ctx.fill();
-                ctx.strokeStyle = '#b91c1c';
-                ctx.lineWidth = 5;
-                ctx.stroke();
-
-                // Holes
-                ctx.fillStyle = '#7f1d1d';
-                ctx.fillRect(-20, -30, 10, 60);
-                ctx.fillRect(10, -30, 10, 60);
-
-                ctx.restore();
-            }
-        });
-
-        // Draw Aim Guides (仅人类玩家显示)
-        const p = getHumanPlayer();
-        if (!p.isDead) {
-            if (p.type === CharacterType.PYRO) {
-                const range = p.currentWeaponRange || CHAR_STATS[CharacterType.PYRO].flamethrowerRange;
-                const angle = p.currentWeaponAngle || CHAR_STATS[CharacterType.PYRO].flamethrowerAngle;
-
-                ctx.save();
-                ctx.translate(p.pos.x, p.pos.y);
-                ctx.rotate(p.aimAngle);
-
-                if (p.isBurnedOut) {
-                    // Grey indicator for burnout
-                    ctx.fillStyle = 'rgba(148, 163, 184, 0.3)';
+            // [High Priority Render Layer 2] Cat Scooper Smash (Giant Shovel)
+            // Rendered AFTER Wukong's staff to ensure it's also on top of everything
+            state.groundEffects.forEach(g => {
+                if (g.type === 'SCOOPER_SMASH') {
+                    // Shadow
+                    const alpha = g.life / g.maxLife;
+                    ctx.fillStyle = `rgba(0,0,0,${alpha * 0.5})`;
                     ctx.beginPath();
-                    ctx.moveTo(0, 0);
-                    ctx.arc(0, 0, range, -angle, angle);
+                    ctx.ellipse(g.pos.x, g.pos.y, g.radius, g.radius * 0.8, 0, 0, Math.PI * 2);
                     ctx.fill();
 
-                    // Warning Icon - Inside the cone range
-                    ctx.translate(range * 0.6, 0);
-                    ctx.rotate(-p.aimAngle); // Make upright
-
-                    ctx.fillStyle = '#f59e0b'; // Amber
+                    // Giant Scooper
+                    ctx.save();
+                    ctx.translate(g.pos.x, g.pos.y - 100 * alpha); // Fall down effect
+                    ctx.rotate(Math.PI / 4);
+                    // Draw Shovel
+                    ctx.fillStyle = '#b91c1c'; // Red handle
+                    ctx.fillRect(-10, -200, 20, 150);
+                    ctx.fillStyle = '#ef4444'; // Red scoop
                     ctx.beginPath();
-                    ctx.moveTo(0, -10);
-                    ctx.lineTo(11, 8);
-                    ctx.lineTo(-11, 8);
+                    ctx.moveTo(-60, -50);
+                    ctx.lineTo(60, -50);
+                    ctx.lineTo(50, 50);
+                    ctx.lineTo(-50, 50);
                     ctx.closePath();
                     ctx.fill();
+                    ctx.strokeStyle = '#b91c1c';
+                    ctx.lineWidth = 5;
+                    ctx.stroke();
 
-                    ctx.fillStyle = 'black';
-                    ctx.font = 'bold 12px sans-serif';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText('!', 0, 2);
-                } else {
-                    ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
-                    ctx.beginPath();
-                    ctx.moveTo(0, 0);
-                    ctx.arc(0, 0, range, -angle, angle);
-                    ctx.fill();
+                    // Holes
+                    ctx.fillStyle = '#7f1d1d';
+                    ctx.fillRect(-20, -30, 10, 60);
+                    ctx.fillRect(10, -30, 10, 60);
+
+                    ctx.restore();
                 }
-                ctx.restore();
-            } else if (p.type === CharacterType.TANK && p.tankMode === TankMode.ARTILLERY) {
-                // [修复] 受控状态下不显示
-                if (isControlled(p)) {
-                    return;
-                }
+            });
 
-                const aimX = mouseRef.current.x + state.camera.x;
-                const aimY = mouseRef.current.y + state.camera.y;
-                const dist = Utils.dist(p.pos, { x: aimX, y: aimY });
-                const minRange = CHAR_STATS[CharacterType.TANK].artilleryMinRange;
-                const isValid = dist > minRange;
-
-                ctx.strokeStyle = isValid ? '#10b981' : '#ef4444';
-                ctx.lineWidth = 2;
-                ctx.setLineDash([8, 6]);
-                ctx.beginPath();
-                ctx.arc(aimX, aimY, CHAR_STATS[CharacterType.TANK].artilleryRadius, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.setLineDash([]);
-
-                ctx.beginPath();
-                ctx.moveTo(aimX - 10, aimY); ctx.lineTo(aimX + 10, aimY);
-                ctx.moveTo(aimX, aimY - 10); ctx.lineTo(aimX, aimY + 10);
-                ctx.stroke();
-
-                if (!isValid) {
-                    ctx.fillStyle = '#ef4444';
-                    ctx.font = 'bold 14px sans-serif';
-                    ctx.fillText('距离过近', aimX - 35, aimY + 80);
-                }
-            } else if (p.type === CharacterType.WUKONG) {
-                // Wukong Aim Guide
-                if (p.wukongChargeState === 'THRUST') {
-                    const chargePct = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
-                    const stats = CHAR_STATS[CharacterType.WUKONG];
-                    const range = 100 + (stats.thrustMaxRange - 100) * chargePct;
+            // Draw Aim Guides (仅人类玩家显示)
+            const p = getHumanPlayer();
+            if (!p.isDead) {
+                if (p.type === CharacterType.PYRO) {
+                    const range = p.currentWeaponRange || CHAR_STATS[CharacterType.PYRO].flamethrowerRange;
+                    const angle = p.currentWeaponAngle || CHAR_STATS[CharacterType.PYRO].flamethrowerAngle;
 
                     ctx.save();
                     ctx.translate(p.pos.x, p.pos.y);
                     ctx.rotate(p.aimAngle);
-                    ctx.fillStyle = 'rgba(250, 204, 21, 0.3)';
-                    ctx.fillRect(0, -5, range, 10);
-                    ctx.restore();
-                } else if (p.wukongChargeState === 'SMASH') {
-                    // Aim circle at cursor removed - using Charge indicator on player and Aim direction arrow
-                    // Calculate Range (Same logic as above for consistency)
-                    const chargePct = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
-                    const stats = CHAR_STATS[CharacterType.WUKONG];
-                    const currentRange = stats.smashMinRange + (stats.smashMaxRange - stats.smashMinRange) * chargePct;
 
-                    const aimX = mouseRef.current.x + state.camera.x;
-                    const aimY = mouseRef.current.y + state.camera.y;
+                    if (p.isBurnedOut) {
+                        // Grey indicator for burnout
+                        ctx.fillStyle = 'rgba(148, 163, 184, 0.3)';
+                        ctx.beginPath();
+                        ctx.moveTo(0, 0);
+                        ctx.arc(0, 0, range, -angle, angle);
+                        ctx.fill();
 
-                    // Calculate direction and fixed distance (Radius of circle)
-                    const dx = aimX - p.pos.x;
-                    const dy = aimY - p.pos.y;
-                    const angle = Math.atan2(dy, dx);
+                        // Warning Icon - Inside the cone range
+                        ctx.translate(range * 0.6, 0);
+                        ctx.rotate(-p.aimAngle); // Make upright
 
-                    // Length is ALWAYS currentRange (fixed to circle radius)
-                    const endX = p.pos.x + Math.cos(angle) * currentRange;
-                    const endY = p.pos.y + Math.sin(angle) * currentRange;
+                        ctx.fillStyle = '#f59e0b'; // Amber
+                        ctx.beginPath();
+                        ctx.moveTo(0, -10);
+                        ctx.lineTo(11, 8);
+                        ctx.lineTo(-11, 8);
+                        ctx.closePath();
+                        ctx.fill();
 
-                    // [修复] 受控状态下不显示指向线（避免直连鼠标）
-                    if (isControlled(p)) {
-                        ctx.restore();
-                        return;
+                        ctx.fillStyle = 'black';
+                        ctx.font = 'bold 12px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText('!', 0, 2);
+                    } else {
+                        ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+                        ctx.beginPath();
+                        ctx.moveTo(0, 0);
+                        ctx.arc(0, 0, range, -angle, angle);
+                        ctx.fill();
                     }
-
-                    // Draw Exquisite Line Indicator
-                    ctx.save();
-
-                    // Glow Effect
-                    ctx.shadowColor = '#facc15'; // Yellow-400
-                    ctx.shadowBlur = 10;
-
-                    // Main Line
-                    ctx.beginPath();
-                    ctx.strokeStyle = 'rgba(250, 204, 21, 0.8)';
-                    ctx.lineWidth = 3;
-                    ctx.moveTo(p.pos.x, p.pos.y);
-                    ctx.lineTo(endX, endY);
-                    ctx.stroke();
-
-                    // Endpoint Indicator (Circle/Dot at the limit)
-                    ctx.fillStyle = '#fef08a'; // Yellow-200
-                    ctx.beginPath();
-                    ctx.arc(endX, endY, 5, 0, Math.PI * 2);
-                    ctx.fill();
-
                     ctx.restore();
-                    ctx.setLineDash([]);
+                } else if (p.type === CharacterType.TANK && p.tankMode === TankMode.ARTILLERY) {
+                    // [修复] 受控状态下不显示
+                    if (!isControlled(p)) {
+                        const aimX = mouseRef.current.x + state.camera.x;
+                        const aimY = mouseRef.current.y + state.camera.y;
+                        const dist = Utils.dist(p.pos, { x: aimX, y: aimY });
+                        const minRange = CHAR_STATS[CharacterType.TANK].artilleryMinRange;
+                        const isValid = dist > minRange;
+
+                        ctx.strokeStyle = isValid ? '#10b981' : '#ef4444';
+                        ctx.lineWidth = 2;
+                        ctx.setLineDash([8, 6]);
+                        ctx.beginPath();
+                        ctx.arc(aimX, aimY, CHAR_STATS[CharacterType.TANK].artilleryRadius, 0, Math.PI * 2);
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+
+                        ctx.beginPath();
+                        ctx.moveTo(aimX - 10, aimY); ctx.lineTo(aimX + 10, aimY);
+                        ctx.moveTo(aimX, aimY - 10); ctx.lineTo(aimX, aimY + 10);
+                        ctx.stroke();
+
+                        if (!isValid) {
+                            ctx.fillStyle = '#ef4444';
+                            ctx.font = 'bold 14px sans-serif';
+                            ctx.fillText('距离过近', aimX - 35, aimY + 80);
+                        }
+                    }
+                } else if (p.type === CharacterType.WUKONG) {
+                    // Wukong Aim Guide
+                    if (p.wukongChargeState === 'THRUST') {
+                        const chargePct = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
+                        const stats = CHAR_STATS[CharacterType.WUKONG];
+                        const range = 100 + (stats.thrustMaxRange - 100) * chargePct;
+
+                        ctx.save();
+                        ctx.translate(p.pos.x, p.pos.y);
+                        ctx.rotate(p.aimAngle);
+                        ctx.fillStyle = 'rgba(250, 204, 21, 0.3)';
+                        ctx.fillRect(0, -5, range, 10);
+                        ctx.restore();
+                    } else if (p.wukongChargeState === 'SMASH') {
+                        // Aim circle at cursor removed - using Charge indicator on player and Aim direction arrow
+                        // Calculate Range (Same logic as above for consistency)
+                        const chargePct = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
+                        const stats = CHAR_STATS[CharacterType.WUKONG];
+                        const currentRange = stats.smashMinRange + (stats.smashMaxRange - stats.smashMinRange) * chargePct;
+
+                        const aimX = mouseRef.current.x + state.camera.x;
+                        const aimY = mouseRef.current.y + state.camera.y;
+
+                        // Calculate direction and fixed distance (Radius of circle)
+                        const dx = aimX - p.pos.x;
+                        const dy = aimY - p.pos.y;
+                        const angle = Math.atan2(dy, dx);
+
+                        // Length is ALWAYS currentRange (fixed to circle radius)
+                        const endX = p.pos.x + Math.cos(angle) * currentRange;
+                        const endY = p.pos.y + Math.sin(angle) * currentRange;
+
+                        // [修复] 受控状态下不显示指向线（避免直连鼠标）
+                        if (!isControlled(p)) {
+                            // Draw Exquisite Line Indicator
+                            ctx.save();
+
+                            // Glow Effect
+                            ctx.shadowColor = '#facc15'; // Yellow-400
+                            ctx.shadowBlur = 10;
+
+                            // Main Line
+                            ctx.beginPath();
+                            ctx.strokeStyle = 'rgba(250, 204, 21, 0.8)';
+                            ctx.lineWidth = 3;
+                            ctx.moveTo(p.pos.x, p.pos.y);
+                            ctx.lineTo(endX, endY);
+                            ctx.stroke();
+
+                            // Endpoint Indicator (Circle/Dot at the limit)
+                            ctx.fillStyle = '#fef08a'; // Yellow-200
+                            ctx.beginPath();
+                            ctx.arc(endX, endY, 5, 0, Math.PI * 2);
+                            ctx.fill();
+
+                            ctx.restore();
+                            ctx.setLineDash([]);
+                        }
+                    }
+                } else if (p.type === CharacterType.CAT) {
+                    // Cat Aim Guide (Arrow)
+                    ctx.save();
+                    ctx.translate(p.pos.x, p.pos.y);
+                    ctx.rotate(p.aimAngle);
+
+                    const currentChargeTime = p.catIsCharging ? (performance.now() - (p.catChargeStartTime || 0)) / 1000 : 0;
+
+                    // Pounce Arrow (Enhanced)
+                    if (p.catIsCharging && currentChargeTime > 0.15) {
+                        const rawPct = Math.min(1, currentChargeTime / CHAR_STATS[CharacterType.CAT].pounceMaxCharge);
+                        // Ease-out curve: 快速增长后平滑到达最大值
+                        const chargePct = 1 - Math.pow(1 - rawPct, 2.5);
+
+                        const baseLen = 100;
+                        const addLen = 220;
+                        const length = baseLen + addLen * chargePct;
+
+                        // 箭头宽度 (随蓄力变粗)
+                        const lineWidth = 4 + chargePct * 5;
+
+                        // 脉冲辉光 (Pulsing Glow)
+                        const pulsePhase = (performance.now() / 150) % (Math.PI * 2);
+                        const pulseIntensity = 0.5 + 0.5 * Math.sin(pulsePhase);
+                        ctx.shadowColor = `rgba(251, 191, 36, ${0.6 * pulseIntensity})`;
+                        ctx.shadowBlur = 10 + 8 * pulseIntensity;
+
+                        // 渐变色 (Gradient: 尾部淡 -> 头部亮)
+                        const gradient = ctx.createLinearGradient(0, 0, length, 0);
+                        gradient.addColorStop(0, `rgba(254, 243, 199, ${0.3 + chargePct * 0.3})`); // 淡黄
+                        gradient.addColorStop(0.6, `rgba(251, 191, 36, ${0.6 + chargePct * 0.4})`); // 金黄
+                        gradient.addColorStop(1, `rgba(245, 158, 11, ${0.8 + chargePct * 0.2})`); // 橙黄 (头部)
+
+                        // 主线
+                        ctx.strokeStyle = gradient;
+                        ctx.lineWidth = lineWidth;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(p.radius * 0.5, 0); // 从球体边缘开始
+                        ctx.lineTo(length, 0);
+                        ctx.stroke();
+
+                        // 箭头头部 (Arrowhead)
+                        const arrowSize = 12 + chargePct * 8;
+                        ctx.fillStyle = `rgba(245, 158, 11, ${0.8 + chargePct * 0.2})`;
+                        ctx.beginPath();
+                        ctx.moveTo(length + arrowSize, 0);
+                        ctx.lineTo(length - arrowSize * 0.4, -arrowSize * 0.6);
+                        ctx.lineTo(length - arrowSize * 0.4, arrowSize * 0.6);
+                        ctx.closePath();
+                        ctx.fill();
+
+                        // 清除阴影以免影响后续渲染
+                        ctx.shadowColor = 'transparent';
+                        ctx.shadowBlur = 0;
+                    } else {
+                        // Scratch Cone
+                        const range = CHAR_STATS[CharacterType.CAT].scratchRange;
+                        ctx.fillStyle = 'rgba(217, 70, 239, 0.2)';
+                        ctx.beginPath();
+                        ctx.moveTo(0, 0);
+                        ctx.arc(0, 0, range, -0.8, 0.8);
+                        ctx.fill();
+                    }
+                    ctx.restore();
                 }
-            } else if (p.type === CharacterType.CAT) {
-                // Cat Aim Guide (Arrow)
-                ctx.save();
-                ctx.translate(p.pos.x, p.pos.y);
-                ctx.rotate(p.aimAngle);
-
-                const currentChargeTime = p.catIsCharging ? (performance.now() - (p.catChargeStartTime || 0)) / 1000 : 0;
-
-                // Pounce Arrow (Enhanced)
-                if (p.catIsCharging && currentChargeTime > 0.15) {
-                    const rawPct = Math.min(1, currentChargeTime / CHAR_STATS[CharacterType.CAT].pounceMaxCharge);
-                    // Ease-out curve: 快速增长后平滑到达最大值
-                    const chargePct = 1 - Math.pow(1 - rawPct, 2.5);
-
-                    const baseLen = 100;
-                    const addLen = 220;
-                    const length = baseLen + addLen * chargePct;
-
-                    // 箭头宽度 (随蓄力变粗)
-                    const lineWidth = 4 + chargePct * 5;
-
-                    // 脉冲辉光 (Pulsing Glow)
-                    const pulsePhase = (performance.now() / 150) % (Math.PI * 2);
-                    const pulseIntensity = 0.5 + 0.5 * Math.sin(pulsePhase);
-                    ctx.shadowColor = `rgba(251, 191, 36, ${0.6 * pulseIntensity})`;
-                    ctx.shadowBlur = 10 + 8 * pulseIntensity;
-
-                    // 渐变色 (Gradient: 尾部淡 -> 头部亮)
-                    const gradient = ctx.createLinearGradient(0, 0, length, 0);
-                    gradient.addColorStop(0, `rgba(254, 243, 199, ${0.3 + chargePct * 0.3})`); // 淡黄
-                    gradient.addColorStop(0.6, `rgba(251, 191, 36, ${0.6 + chargePct * 0.4})`); // 金黄
-                    gradient.addColorStop(1, `rgba(245, 158, 11, ${0.8 + chargePct * 0.2})`); // 橙黄 (头部)
-
-                    // 主线
-                    ctx.strokeStyle = gradient;
-                    ctx.lineWidth = lineWidth;
-                    ctx.lineCap = 'round';
-                    ctx.beginPath();
-                    ctx.moveTo(p.radius * 0.5, 0); // 从球体边缘开始
-                    ctx.lineTo(length, 0);
-                    ctx.stroke();
-
-                    // 箭头头部 (Arrowhead)
-                    const arrowSize = 12 + chargePct * 8;
-                    ctx.fillStyle = `rgba(245, 158, 11, ${0.8 + chargePct * 0.2})`;
-                    ctx.beginPath();
-                    ctx.moveTo(length + arrowSize, 0);
-                    ctx.lineTo(length - arrowSize * 0.4, -arrowSize * 0.6);
-                    ctx.lineTo(length - arrowSize * 0.4, arrowSize * 0.6);
-                    ctx.closePath();
-                    ctx.fill();
-
-                    // 清除阴影以免影响后续渲染
-                    ctx.shadowColor = 'transparent';
-                    ctx.shadowBlur = 0;
-                } else {
-                    // Scratch Cone
-                    const range = CHAR_STATS[CharacterType.CAT].scratchRange;
-                    ctx.fillStyle = 'rgba(217, 70, 239, 0.2)';
-                    ctx.beginPath();
-                    ctx.moveTo(0, 0);
-                    ctx.arc(0, 0, range, -0.8, 0.8);
-                    ctx.fill();
-                }
-                ctx.restore();
             }
+        } finally {
+            ctx.restore();
         }
-
-        ctx.restore();
 
         // Health Bars (遍历所有玩家)
         state.players.forEach(p => {
@@ -5818,7 +5974,19 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 const st = stateRef.current;
                 // [修改] 获取本地玩家对象 (替换 st.player)
                 const human = getHumanPlayer();
-                if (!human) return;
+
+                // [FIX] 即使 human 为 null 也必须继续游戏循环
+                if (!human) {
+                    // 仍然绘制画面和继续循环
+                    if (canvasRef.current) {
+                        const ctx = canvasRef.current.getContext('2d');
+                        if (ctx) draw(ctx);
+                    }
+                    if (st.gameStatus === 'PLAYING') {
+                        requestRef.current = requestAnimationFrame(loop);
+                    }
+                    return;
+                }
 
                 // [Spectator Logic Fix] Determine which player's stats to show
                 let uiTarget = human;
@@ -6002,6 +6170,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     pCatLives: uiTarget.lives || 0,
                     pCatCharge: uiTarget.catIsCharging ? (performance.now() - (uiTarget.catChargeStartTime || 0)) / 1000 : 0,
 
+                    // Magic UI Update
+                    pMp: uiTarget.mp || 0,
+                    pMaxMp: uiTarget.maxMp || 200,
+
                     // 敌人状态基于显示对象(可能是缓存的)
                     eCatLives: (displayEnemy && displayEnemy.type === CharacterType.CAT) ? (displayEnemy.lives || 0) : 0,
                     eType: displayEnemy ? displayEnemy.type : uiTarget.type,
@@ -6013,7 +6185,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 if (canvasRef.current) {
                     const ctx = canvasRef.current.getContext('2d');
-                    if (ctx) draw(ctx);
+                    if (ctx) {
+                        try {
+                            draw(ctx);
+                        } catch (err) {
+                            console.error("Draw error:", err);
+                        }
+                    }
                 }
 
                 if (st.gameStatus === 'PLAYING') {
@@ -6197,6 +6375,22 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         </div>
                     )}
 
+                    {/* MAGIC UI: MANA BAR */}
+                    {uiState.pType === CharacterType.MAGIC && (
+                        <>
+                            <div className="flex justify-between items-center mb-1">
+                                <span className="text-xs text-slate-300 font-bold uppercase">法力值</span>
+                                <span className="text-xs text-blue-400 font-mono">{Math.floor(uiState.pMp)} / {uiState.pMaxMp}</span>
+                            </div>
+                            <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2 border border-slate-600">
+                                <div
+                                    className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
+                                    style={{ width: `${(uiState.pMp / uiState.pMaxMp) * 100}%` }}
+                                />
+                            </div>
+                        </>
+                    )}
+
                     {/* SKILLS & STATUS */}
                     <div className="flex items-center justify-between mt-5 pt-3 border-t border-slate-700/50">
                         <div className="flex items-center gap-3">
@@ -6280,6 +6474,25 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                     </div>
                                 ) : (
                                     <span className="text-xs font-bold text-amber-400">就绪</span>
+                                )}
+                            </div>
+                        )}
+
+                        {/* MAGIC PROTECTION CD INDICATOR */}
+                        {uiState.pType === CharacterType.MAGIC && (
+                            <div className="flex flex-col items-end w-24">
+                                <span className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">随机咒语 (右键)</span>
+                                {uiState.pSecondarySkillCD > 0 ? (
+                                    <div className="w-full h-1.5 bg-slate-700 rounded-full mt-1 overflow-hidden">
+                                        <div
+                                            className="h-full bg-blue-600"
+                                            style={{ width: `${(1 - uiState.pSecondarySkillCD / uiState.pSecondarySkillMaxCD) * 100}%` }}
+                                        ></div>
+                                    </div>
+                                ) : (
+                                    <span className={`text-xs font-bold ${uiState.pMp < CHAR_STATS[CharacterType.MAGIC].protectManaCost ? 'text-red-500' : 'text-blue-400'}`}>
+                                        {uiState.pMp < CHAR_STATS[CharacterType.MAGIC].protectManaCost ? '法力不足' : '就绪'}
+                                    </span>
                                 )}
                             </div>
                         )}
