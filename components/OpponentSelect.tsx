@@ -109,6 +109,7 @@ const OpponentSelect: React.FC<OpponentSelectProps> = ({ onSelectOpponent, onBac
                     {renderCard("坦克球", CharacterType.TANK, CHAR_STATS[CharacterType.TANK].uiThemeColor, "🛡️")}
                     {renderCard("悟空球", CharacterType.WUKONG, CHAR_STATS[CharacterType.WUKONG].uiThemeColor, "🐵")}
                     {renderCard("猫猫球", CharacterType.CAT, CHAR_STATS[CharacterType.CAT].uiThemeColor, "🐱")}
+                    {renderCard("魔法球", CharacterType.MAGIC, CHAR_STATS[CharacterType.MAGIC].uiThemeColor, "🔮")}
                 </div>
 
                 {/* 3. 训练靶场 */}

@@ -4,6 +4,7 @@ export enum CharacterType {
   WUKONG = 'WUKONG',
   CAT = 'CAT',
   COACH = 'COACH',
+  MAGIC = 'MAGIC',
 }
 
 export enum TankMode {
@@ -23,6 +24,7 @@ export interface GameEntity {
   radius: number;
   mass: number;
   color: string;
+  isMechanical?: boolean;
 }
 
 export interface Drone extends GameEntity {
@@ -44,6 +46,7 @@ export interface PlayerState extends GameEntity {
   isBot: boolean;
   hp: number;
   maxHp: number;
+  uiThemeColor: string;
 
   // Death State
   isDead: boolean;
@@ -120,6 +123,7 @@ export interface PlayerState extends GameEntity {
   stunTimer: number;
   blindTimer: number;
   tauntTimer: number;
+  tauntSourceId?: string; // [新增] 嘲讽来源ID
   rootTimer: number;
   sleepTimer: number;
   silenceTimer: number;
@@ -137,7 +141,23 @@ export interface PlayerState extends GameEntity {
   bufferedInput: string;
   // 飘字系统专用字段
   statusLabel?: string;
+  statusLabelPos?: Vector2; // [New] Spawning position
+  statusHistory: string[]; // [New] Track status application order for color priority
+  aiSkipSkills?: boolean;
+  stealth: boolean;
   burstFlag?: boolean;
+
+  // Magic Ball Resources
+  mp?: number;           // 当前法力值
+  maxMp?: number;        // 最大法力值
+  magicForm?: 'WHITE' | 'BLACK';  // 魔法形态
+  darkWizardColor?: string; // 暗黑巫师形态下的颜色
+  magicShieldHp?: number;         // 盔甲护身护盾值
+  magicShieldTimer?: number;      // 盔甲护身持续时间
+  lightSpiritTimer?: number;      // 光灵球持续时间
+  magicUltCharging?: boolean;     // 黑魔法大招蓄力状态
+  magicUltChargeTime?: number;    // 蓄力时间
+  ccImmuneTimer?: number;         // 控制免疫计时器
 
   // AI specific
   lastPos?: Vector2;
@@ -157,7 +177,7 @@ export interface Projectile extends GameEntity {
   ownerId: string;
   maxLife: number;
   life: number;
-  projectileType: 'BULLET' | 'BOMB' | 'MAGMA_PROJ' | 'DRONE_SHOT';
+  projectileType: 'BULLET' | 'BOMB' | 'MAGMA_PROJ' | 'DRONE_SHOT' | 'MAGIC_SPELL' | 'MAGIC_BEAM';
   targetPos?: Vector2; // For lobbed shots
   isAoe?: boolean;
   aoeRadius?: number;
@@ -171,7 +191,7 @@ export interface GroundEffect {
   radius: number;
   life: number;
   maxLife: number;
-  type: 'MAGMA_POOL' | 'WUKONG_SMASH' | 'CRACK' | 'SCOOPER_SMASH' | 'SCOOPER_WARNING' | 'START_BEACON';
+  type: 'MAGMA_POOL' | 'WUKONG_SMASH' | 'CRACK' | 'SCOOPER_SMASH' | 'SCOOPER_WARNING' | 'START_BEACON' | 'LIGHT_SPIRIT' | 'PATRONUS_WAVE';
   ownerId: string;
   width?: number;
   length?: number;

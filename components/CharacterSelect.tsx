@@ -48,7 +48,7 @@ const CharacterSelect: React.FC<CharacterSelectProps> = ({ onSelectCharacter, on
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 max-w-7xl w-full px-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6 max-w-7xl w-full px-4">
 
         {/* PYRO CARD */}
         <div
@@ -136,6 +136,27 @@ const CharacterSelect: React.FC<CharacterSelectProps> = ({ onSelectCharacter, on
             {/* [更新] 机制描述 */}
             <p className="mt-2 text-[10px] text-slate-500 border-t border-slate-700/50 pt-2">
               机制：九命复活 / 飞扑控制 / 铲屎官之怒
+            </p>
+          </div>
+        </div>
+
+        {/* MAGIC CARD */}
+        <div
+          onClick={() => handleSelect(CharacterType.MAGIC)}
+          className={`group relative bg-slate-800 rounded-2xl p-6 border-2 border-slate-700 hover:border-${CHAR_STATS[CharacterType.MAGIC].uiThemeColor}-400 cursor-pointer transition-all hover:scale-105 mt-8`}
+        >
+          {renderAvatar(CharacterType.MAGIC, null, `border-${CHAR_STATS[CharacterType.MAGIC].uiThemeColor}-400`)}
+          <div className="mt-10 text-center">
+            <h2 className={`text-2xl font-bold text-${CHAR_STATS[CharacterType.MAGIC].uiThemeColor}-300 mb-2`}>魔法球</h2>
+            <p className="text-xs text-slate-300 mb-4 italic">随机魔法</p>
+            <div className="space-y-1 text-left bg-slate-900/50 p-3 rounded-lg text-xs">
+              <div className="flex justify-between"><span>速度</span> <span className="text-yellow-400">中等</span></div>
+              <div className="flex justify-between"><span>防御</span> <span className="text-yellow-400">中等</span></div>
+              <div className="flex justify-between"><span>攻击</span> <span>随机诅咒</span></div>
+            </div>
+            {/* [更新] 机制描述 */}
+            <p className="mt-2 text-[10px] text-slate-500 border-t border-slate-700/50 pt-2">
+              机制：随机控制 / 三种保命咒 / 黑白形态
             </p>
           </div>
         </div>

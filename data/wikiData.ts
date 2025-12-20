@@ -21,13 +21,6 @@ export interface WikiEntry {
   }[];
 }
 
-// 提取通用图标路径，方便复用
-const ICONS = {
-  LMB: "M10 5a2 2 0 00-2 2v3H5a2 2 0 00-2 2v8a2 2 0 002 2h14a2 2 0 002-2v-8a2 2 0 00-2-2h-3V7a2 2 0 00-2-2h-4zm0 2h4v3h-4V7z", // Mouse
-  KEY: "M4 6a2 2 0 012-2h12a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm2 0v8h12V6H6z", // Keyboard
-  FIRE: "M13.5 4.5c.2 1.3-.3 2.2-.6 2.7.2-.1.4-.2.6-.2.9 0 1.9.5 1.9 2.5 0 2.2-2.2 4-4.5 4.5V16h-2v-2C6.5 13.5 4.5 11.5 4.5 9c0-1.8 1.2-2.4 1.9-2.5.2 0 .4.1.6.2-.2-.5-.8-1.4-.6-2.7h.1c.5 0 1.2.6 1.7 1.5.5-1.1 1.2-2 2.6-2 .1.6.2 1.3.2 2 .5-.9 1.3-1.6 1.8-1.5h.7z",
-};
-
 export const WIKI_DATA: WikiEntry[] = [
   // === 公共规则 ===
   {
@@ -58,7 +51,7 @@ export const WIKI_DATA: WikiEntry[] = [
       }
     ]
   },
-  
+
   // === 火焰球 PYRO ===
   {
     id: 'ball_pyro',
@@ -75,7 +68,7 @@ export const WIKI_DATA: WikiEntry[] = [
       {
         key: 'LMB',
         name: '火焰喷射',
-        description: `持续喷射高温火焰。鼠标离球心越近，喷射角度越宽（适合近战）；离球心越远，喷射越集中（适合远程）。\n注意：持续开火会积累热能，达到 ${CHAR_STATS.PYRO.maxHeat}% 会【过热】，期间无法攻击。`
+        description: `持续喷射高温火焰。鼠标离球心越近，喷射角度越宽（适合近战）；离球心越远，喷射越集中（适合远程）。\n注意：持续开火会【燃尽】，期间无法攻击。`
       },
       {
         key: 'RMB',
@@ -202,6 +195,43 @@ export const WIKI_DATA: WikiEntry[] = [
         key: 'PASSIVE',
         name: '九命怪猫',
         description: `初始拥有 ${CHAR_STATS.CAT.maxLives} 条命。每次死亡会消耗一条命并满血复活。内战时自带 70% 伤害减免。`
+      }
+    ]
+  },
+  {
+    id: 'ball_magic',
+    title: '魔法球 (Magic)',
+    description: '充满随机性的神秘施法者。拥有隐藏的黑白双形态，所有技能消耗法力值(MP)。',
+    type: 'BALL',
+    ballType: CharacterType.MAGIC,
+    stats: {
+      hp: CHAR_STATS.MAGIC.hp,
+      speed: CHAR_STATS.MAGIC.speed * 10,
+      mass: CHAR_STATS.MAGIC.mass,
+    },
+    skills: [
+      {
+        key: 'LMB',
+        name: '随机诅咒',
+        description: `发射一道咒语，命中敌人施加随机负面状态（0.5-3秒）。不造成直接伤害。\n消耗: ${CHAR_STATS.MAGIC.curseManaCost} MP`,
+        cooldown: CHAR_STATS.MAGIC.curseCooldown / 1000
+      },
+      {
+        key: 'RMB',
+        name: '保命咒语',
+        description: `随机释放三种咒语之一：\n【除你武器】近身缴械敌人3秒\n【盔甲护身】获得${CHAR_STATS.MAGIC.armorShieldHp}HP护盾\n【移形换影】解除控制并闪现到安全位置`,
+        cooldown: 5
+      },
+      {
+        key: 'SPACE',
+        name: '终极魔法',
+        description: `白魔法球：【呼神护卫】消耗全部MP，释放冲击波击退敌人，召唤光灵球守护自己5秒（持续回血回蓝、免疫控制）。\n黑魔法球：【阿瓦达啃大瓜】消耗全部MP，向瞄准方向发射致命光束，血越低、MP越多伤害越高。`,
+        cooldown: CHAR_STATS.MAGIC.skillCooldown / 1000
+      },
+      {
+        key: 'PASSIVE',
+        name: '魔法天赋',
+        description: `进入对局有10%概率变为黑魔法球形态。MP持续匀速恢复(${CHAR_STATS.MAGIC.mpRegen}/秒)，上限${CHAR_STATS.MAGIC.maxMp}。`
       }
     ]
   }

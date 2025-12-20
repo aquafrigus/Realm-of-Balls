@@ -1,5 +1,31 @@
 import { CharacterType } from "./types";
 
+export const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  // Negative Statuses (Debuffs)
+  stun: { label: '眩晕|拍扁', color: '#fbbf24' },   // Amber-400
+  petrify: { label: '石化', color: '#94a3b8' },    // Slate-400
+  sleep: { label: '催眠', color: '#818cf8' },      // Indigo-400
+  fear: { label: '恐惧', color: '#c084fc' },       // Purple-400
+  charm: { label: '魅惑|踩', color: '#ec4899' },      // Pink-500
+  taunt: { label: '嘲讽', color: '#ef4444' },      // Red-500
+  silence: { label: '沉默', color: '#60a5fa' },    // Blue-400
+  disarm: { label: '缴械', color: '#f87171' },     // Red-400
+  root: { label: '束缚', color: '#22c55e' },       // Green-500
+  blind: { label: '致盲', color: '#10b981' },      // Emerald-500
+  slow: { label: '减速', color: '#3b82f6' },       // Blue-500
+  burn: { label: '灼烧', color: '#ea580c' },       // Orange-600
+  wet: { label: '潮湿', color: '#06b6d4' },        // Cyan-500
+
+  // Positive Statuses (Buffs)
+  invincible: { label: '无敌', color: '#facc15' }, // Yellow-400
+  stealth: { label: '隐身', color: '#64748b' },    // Slate-500
+  haste: { label: '加速', color: '#0ea5e9' },       // Sky-500
+  heal: { label: '治疗', color: '#34d399' },    // Emerald-400
+  revive: { label: '复活|有精神', color: '#22d3ee' },      // Cyan-400
+
+};
+
+
 export const MAP_SIZE = { width: 2000, height: 2000 };
 export const VIEWPORT_PADDING = 200;
 
@@ -11,12 +37,12 @@ export const PHYSICS = {
 
 export const CHAR_STATS = {
   [CharacterType.COACH]: {
-    hp: 50000, // 极高血量
-    mass: 2000, // 非常重，不容易被击飞，方便测试连招
+    hp: 3000,
+    mass: 300,
     radius: 45, // 稍大一点，容易命中
     speed: 1.0, // 极慢的移动速度
 
-    color: '#e2e8f0', // 灰白色
+    color: '#e2e8f0', // 基础为灰白色，但在渲染时会变为彩色光效 (Rainbow)
     uiThemeColor: 'slate',
 
     skillCooldown: 99999,
@@ -143,5 +169,52 @@ export const CHAR_STATS = {
     scoopRadius: 154,
     scoopDelay: 2000,
     scoopMaxRange: 600,
+  },
+  [CharacterType.MAGIC]: {
+    hp: 800,
+    mass: 160,
+    radius: 26,
+    speed: 2.5,
+
+    color: '#e5e7eb',   // 基础色为白色，进入对局后若黑化则重新在对局内赋值colorDarkWizard
+    darkWizardColor: '#020617',
+    uiThemeColor: 'zinc',
+    darkWizardUiThemeColor: 'slate',
+
+    // MP System
+    maxMp: 200,
+    mpRegen: 20,        // MP/秒，匀速恢复
+
+    // Left Click - Curse (普攻咒语)
+    curseManaCost: 15,
+    curseCooldown: 1000,
+    curseRange: 400,    // 最大飞行距离
+    curseSpeed: 12,
+
+    // Right Click - Protection Spell (保命咒语)
+    protectManaCost: 40,
+    // 《除你武器》: 缴械3秒, CD 5秒, 范围极近(80)
+    expelliarmusRange: 80,
+    expelliarmusDuration: 3000,
+    expelliarmusCooldown: 5000,
+    // 《盔甲护身》: 护盾500HP, 持续5秒, CD 7秒
+    armorShieldHp: 500,
+    armorDuration: 5000,
+    armorCooldown: 7000,
+    // 《移形换影》: 解除控制+闪现, CD 9秒
+    blinkCooldown: 9000,
+
+    // Ultimate - Skill Cooldown
+    skillCooldown: 15000,
+    secondarySkillCooldown: 5000, // 右键初始CD
+    // 《呼神护卫》(白): 冲击波击退, 光灵球持续5秒
+    patronusKnockback: 1200,
+    patronusRange: 350,
+    lightSpiritDuration: 5000,
+    lightSpiritHealRate: 15,   // HP/秒
+    lightSpiritMpRegenMultiplier: 2,
+    // 《阿瓦达啃大瓜》(黑): 蓄力贯穿光束
+    avadaMaxDamage: 2500,      // 最大伤害(需低血量+高MP)
+    avadaMpDrainRate: 80,      // 蓄力时MP消耗速度/秒
   }
 };

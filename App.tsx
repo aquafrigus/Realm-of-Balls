@@ -84,6 +84,7 @@ function App() {
           onQuickStart={handleQuickStart}
           onOpenSettings={handleOpenSettings}
           onCustomGame={handleCustomGame}
+          onOpenWiki={toggleWiki}
         />
       )}
 

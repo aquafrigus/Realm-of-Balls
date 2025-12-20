@@ -33,6 +33,12 @@ const CAT_SKILL = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/
 const COACH_AVATAR = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='45' fill='%23f8fafc' stroke='%23475569' stroke-width='4'/%3E%3Ccircle cx='50' cy='50' r='35' fill='%23ef4444'/%3E%3Ccircle cx='50' cy='50' r='25' fill='%23f8fafc'/%3E%3Ccircle cx='50' cy='50' r='15' fill='%23ef4444'/%3E%3Ccircle cx='50' cy='50' r='5' fill='%23f8fafc'/%3E%3C/svg%3E`;
 const COACH_SKILL = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='60' text-anchor='middle' fill='white' font-size='20'%3EAI%3C/text%3E%3C/svg%3E`;
 
+// Magic Ball Avatar: Wizard Ball (White/Gold to Black/Purple Gradient) with Hat
+const MAGIC_AVATAR = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3CradialGradient id='voidOrb' cx='35%25' cy='35%25' r='65%25'%3E%3Cstop offset='0%25' stop-color='%23f8fafc'/%3E%3Cstop offset='40%25' stop-color='%2364748b'/%3E%3Cstop offset='100%25' stop-color='%23020617'/%3E%3C/radialGradient%3E%3ClinearGradient id='robeDark' x1='20%25' y1='0%25' x2='80%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%23334155'/%3E%3Cstop offset='100%25' stop-color='%23020617'/%3E%3C/linearGradient%3E%3ClinearGradient id='silverTrim' x1='0%25' y1='0%25' x2='100%25' y2='0%25'%3E%3Cstop offset='0%25' stop-color='%2394a3b8'/%3E%3Cstop offset='50%25' stop-color='%23f1f5f9'/%3E%3Cstop offset='100%25' stop-color='%2394a3b8'/%3E%3C/linearGradient%3E%3C/defs%3E%3C!-- Magic Aura --%3E%3Ccircle cx='50' cy='50' r='46' stroke='%23334155' stroke-width='0.5' fill='none' stroke-dasharray='4 2' opacity='0.4'/%3E%3C!-- Robe Group (Transparent) --%3E%3Cg opacity='0.7'%3E%3C!-- Robe Body --%3E%3Cpath d='M15 95 C 10 60, 25 10, 50 10 C 75 10, 90 60, 85 95' fill='url(%23robeDark)' stroke='%231e293b' stroke-width='2'/%3E%3C!-- Grey Patterns/Folds --%3E%3Cpath d='M25 45 Q 35 65 20 85' stroke='%2364748b' stroke-width='1' fill='none' opacity='0.5'/%3E%3Cpath d='M75 45 Q 65 65 80 85' stroke='%2364748b' stroke-width='1' fill='none' opacity='0.5'/%3E%3Cpath d='M32 25 Q 50 35 68 25' stroke='%2364748b' stroke-width='1' fill='none' opacity='0.4'/%3E%3Cpath d='M42 85 L 50 78 L 58 85' stroke='%2364748b' stroke-width='1' fill='none' opacity='0.4'/%3E%3C!-- Opening Trim --%3E%3Cpath d='M28 55 Q 50 25 72 55' stroke='url(%23silverTrim)' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/g%3E%3C!-- Void Orb (Inside Hood) --%3E%3Ccircle cx='50' cy='60' r='20' fill='url(%23voidOrb)' stroke='%230f172a' stroke-width='1'/%3E%3C!-- Mystic Sigil --%3E%3Cpath d='M50 52 L56 60 L50 68 L44 60 Z' fill='none' stroke='%23f8fafc' stroke-width='1.5' opacity='0.9'/%3E%3Ccircle cx='50' cy='60' r='3' fill='%23f8fafc' opacity='0.9'/%3E%3C!-- Sparkles --%3E%3Ctext x='80' y='30' fill='%2394a3b8' font-size='10' opacity='0.6'%3E✦%3C/text%3E%3Ctext x='18' y='80' fill='%2364748b' font-size='8' opacity='0.6'%3E✦%3C/text%3E%3C/svg%3E`;
+
+// Magic Ball Skill: 魔杖
+const MAGIC_SKILL = `data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231f2937' rx='20'/%3E%3Cpath d='M25 75 L75 25' stroke='%23f8fafc' stroke-width='8' stroke-linecap='round'/%3E%3Ccircle cx='75' cy='25' r='12' fill='%23a855f7'/%3E%3Cpath d='M75 25 L85 15 M75 25 L85 35 M75 25 L65 15' stroke='%23fef08a' stroke-width='2'/%3E%3C/svg%3E`;
+
 export interface CharacterImageSet {
     avatar: string;
     skill: string;
@@ -58,5 +64,9 @@ export const CHARACTER_IMAGES: Record<CharacterType, CharacterImageSet> = {
     [CharacterType.COACH]: {
         avatar: COACH_AVATAR,
         skill: COACH_SKILL
+    },
+    [CharacterType.MAGIC]: {
+        avatar: MAGIC_AVATAR,
+        skill: MAGIC_SKILL
     }
 };

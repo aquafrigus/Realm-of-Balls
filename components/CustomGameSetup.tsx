@@ -10,6 +10,7 @@ const ROLE_NAMES: Record<CharacterType, string> = {
     [CharacterType.CAT]: '猫猫球',
     [CharacterType.TANK]: '坦克球',
     [CharacterType.COACH]: '教练球',
+    [CharacterType.MAGIC]: '魔法球',
 };
 
 export interface GameConfig {
@@ -41,7 +42,7 @@ const CustomGameSetup: React.FC<Props> = ({ onStart, onBack }) => {
     });
 
     const availableChars = [
-        CharacterType.PYRO, CharacterType.TANK, CharacterType.WUKONG, CharacterType.CAT
+        CharacterType.PYRO, CharacterType.TANK, CharacterType.WUKONG, CharacterType.CAT, CharacterType.MAGIC
     ];
 
     // Smart Randomization Logic
@@ -120,34 +121,40 @@ const CustomGameSetup: React.FC<Props> = ({ onStart, onBack }) => {
         const isPlayer = index === 0;
         let label = isPlayer ? "玩家" : "电脑";
         let borderColor = "border-slate-600";
+        const isTeamMode = mode !== 'FFA';
 
-        if (mode !== 'FFA') {
+        if (isTeamMode) {
             const isAlly = (mode === 'TEAM_2V2' && index < 2) || (mode === 'TEAM_3V3' && index < 3);
             label = isPlayer ? "玩家 (我方)" : (isAlly ? "电脑 (队友)" : "电脑 (敌方)");
             borderColor = isAlly ? "border-blue-500" : "border-red-500";
         }
 
         const charType = slots[index];
+        // 团队模式下背景色调亮一点，方便看清深色头像
+        const bgClass = isTeamMode ? 'bg-slate-700' : 'bg-slate-800';
 
         return (
-            <div key={index} className={`relative bg-slate-800 rounded-xl p-3 border-2 ${borderColor} flex flex-col items-center gap-2`}>
+            <div key={index} className={`relative ${bgClass} rounded-xl p-3 border-2 ${borderColor} flex flex-col items-center gap-2 ${isTeamMode ? 'w-44 h-full' : ''}`}>
                 <span className={`text-xs font-bold uppercase ${index === 0 ? 'text-yellow-400' : 'text-slate-400'}`}>
                     {label}
                 </span>
 
-                <div className="grid grid-cols-2 gap-1">
+                <div className={isTeamMode
+                    ? "grid grid-cols-2 gap-2 w-full overflow-y-auto scrollbar-hide [&::-webkit-scrollbar]:hidden flex-1 content-start px-1"
+                    : "grid grid-cols-2 gap-1"
+                }>
                     {availableChars.map(c => (
                         <button
                             key={c}
                             onClick={() => handleCharChange(index, c)}
-                            className={`w-10 h-10 rounded-lg border-2 overflow-hidden transition-all ${charType === c ? 'border-white scale-110 shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
+                            className={`w-10 h-10 rounded-lg border-2 overflow-hidden transition-all flex-shrink-0 ${charType === c ? 'border-white scale-110 shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
                         >
                             <img src={CHARACTER_IMAGES[c].avatar} alt={c} className="w-full h-full object-cover" />
                         </button>
                     ))}
                 </div>
 
-                <div className="mt-1 text-xs text-white font-mono font-bold">
+                <div className="mt-1 text-xs text-white font-mono font-bold whitespace-nowrap overflow-hidden text-ellipsis w-full text-center">
                     {ROLE_NAMES[charType] || charType}
                 </div>
             </div>
