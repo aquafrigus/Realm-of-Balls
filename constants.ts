@@ -1,33 +1,38 @@
 import { CharacterType } from "./types";
 
-export const STATUS_CONFIG: Record<string, { label: string; color: string; isPositive: boolean }> = {
+export const STATUS_CONFIG: Record<string, { label: string; color: string; isPositive: boolean; floatingTextCD?: number }> = {
   // Negative Statuses (Debuffs)
-  stun: { label: '眩晕|拍扁', color: '#fbbf24', isPositive: false },   // Amber-400
-  petrify: { label: '石化', color: '#94a3b8', isPositive: false },    // Slate-400
-  sleep: { label: '催眠', color: '#818cf8', isPositive: false },      // Indigo-400
-  fear: { label: '恐惧', color: '#c084fc', isPositive: false },       // Purple-400
-  charm: { label: '魅惑|踩', color: '#ec4899', isPositive: false },      // Pink-500
-  taunt: { label: '嘲讽', color: '#ef4444', isPositive: false },      // Red-500
-  silence: { label: '沉默', color: '#60a5fa', isPositive: false },    // Blue-400
-  disarm: { label: '缴械', color: '#f87171', isPositive: false },     // Red-400
-  root: { label: '束缚', color: '#22c55e', isPositive: false },       // Green-500
-  blind: { label: '致盲', color: '#10b981', isPositive: false },      // Emerald-500
-  slow: { label: '减速', color: '#3b82f6', isPositive: false },       // Blue-500
-  burn: { label: '灼烧', color: '#ea580c', isPositive: false },       // Orange-600
-  wet: { label: '潮湿', color: '#06b6d4', isPositive: false },        // Cyan-500
+  stun: { label: '眩晕|拍扁', color: '#fbbf24', isPositive: false, floatingTextCD: 800 },   // Amber-400
+  petrify: { label: '石化', color: '#94a3b8', isPositive: false, floatingTextCD: 800 },    // Slate-400
+  sleep: { label: '催眠', color: '#818cf8', isPositive: false, floatingTextCD: 800 },      // Indigo-400
+  fear: { label: '恐惧', color: '#c084fc', isPositive: false, floatingTextCD: 800 },       // Purple-400
+  charm: { label: '魅惑|被萌翻', color: '#ec4899', isPositive: false, floatingTextCD: 800 },      // Pink-500
+  taunt: { label: '嘲讽', color: '#ef4444', isPositive: false, floatingTextCD: 800 },      // Red-500
+  silence: { label: '沉默', color: '#60a5fa', isPositive: false, floatingTextCD: 800 },    // Blue-400
+  disarm: { label: '缴械|踩', color: '#f87171', isPositive: false, floatingTextCD: 800 },     // Red-400
+  root: { label: '束缚', color: '#22c55e', isPositive: false, floatingTextCD: 800 },       // Green-500
+  blind: { label: '致盲', color: '#10b981', isPositive: false, floatingTextCD: 800 },      // Emerald-500
+  slow: { label: '减速', color: '#3b82f6', isPositive: false, floatingTextCD: 3000 },      // Blue-500
+  burn: { label: '灼烧', color: '#ea580c', isPositive: false, floatingTextCD: 3000 },       // Orange-600
+  wet: { label: '潮湿', color: '#06b6d4', isPositive: false, floatingTextCD: 800 },        // Cyan-500
 
   // Positive Statuses (Buffs)
-  invincible: { label: '无敌', color: '#facc15', isPositive: true }, // Yellow-400
-  stealth: { label: '隐身', color: '#64748b', isPositive: true },    // Slate-500
-  haste: { label: '加速', color: '#0ea5e9', isPositive: true },       // Sky-500
-  heal: { label: '治疗', color: '#34d399', isPositive: true },    // Emerald-400
-  revive: { label: '复活|有精神', color: '#22d3ee', isPositive: true },      // Cyan-400
-
+  invincible: { label: '无敌', color: '#facc15', isPositive: true, floatingTextCD: 1000 }, // Yellow-400
+  stealth: { label: '隐身', color: '#64748b', isPositive: true, floatingTextCD: 1000 },    // Slate-500
+  haste: { label: '加速', color: '#0ea5e9', isPositive: true, floatingTextCD: 1000 },       // Sky-500
+  heal: { label: '治疗', color: '#34d399', isPositive: true, floatingTextCD: 500 },    // Emerald-400
+  revive: { label: '复活|有精神', color: '#22d3ee', isPositive: true, floatingTextCD: 2000 },      // Cyan-400
 };
-
 
 export const MAP_SIZE = { width: 2000, height: 2000 };
 export const VIEWPORT_PADDING = 200;
+
+export const TERRAIN_CONFIG = {
+  WALL_COLOR: '#475569', // Slate-600 (Matches drawing)
+  WALL_BORDER_COLOR: '#94a3b8', // Slate-400
+  WALL_DEBRIS_COLOR: '#475569', // Slate-600
+  WALL_SHATTER_PARTICLE_COUNT: 30,
+};
 
 export const PHYSICS = {
   FRICTION: 0.90,
@@ -38,7 +43,7 @@ export const PHYSICS = {
 export const CHAR_STATS = {
   [CharacterType.COACH]: {
     hp: 3000,
-    mass: 300,
+    mass: 250,
     radius: 45, // 稍大一点，容易命中
     speed: 1.0, // 极慢的移动速度
 
@@ -136,6 +141,8 @@ export const CHAR_STATS = {
     smashWidthMin: 50,
     smashWidthMax: 90,
     smashChargeTime: 1.5,
+    smashKnockbackMin: 10000,
+    smashKnockbackMax: 30000,
   },
   [CharacterType.CAT]: {
     hp: 150, // Extremely low HP
@@ -154,6 +161,7 @@ export const CHAR_STATS = {
 
     // Pounce (Charged Attack)
     pounceMaxCharge: 1.0, // 1s to max charge
+    pounceChargeThreshold: 0.2, // Time to trigger pounce/indicator
     pounceSpeed: 1.5,
     pounceDamage: 300,
     pounceCooldown: 1000,
@@ -186,16 +194,19 @@ export const CHAR_STATS = {
     mpRegen: 20,        // MP/秒，匀速恢复
 
     // Left Click - Curse (普攻咒语)
-    curseManaCost: 15,
-    curseCooldown: 1000,
-    curseRange: 400,    // 最大飞行距离
-    curseSpeed: 12,
+    curseManaCost: 10,   // 初始消耗 (0.5s CD -> 10MP/s vs 20MP/s Regen)
+    curseManaMaxCost: 60, // 连续使用最大消耗 (90MP/s Drain)
+    curseRampUpTime: 2, // 达到最大消耗所需时间 (秒) - 约5发攻击
+    curseCooldown: 400,  // 极快射速
+    curseRange: 450,    // 最大飞行距离
+    curseSpeed: 13,
 
     // Right Click - Protection Spell (保命咒语)
     protectManaCost: 40,
+    expelliarmusManaCost: 100,
     // 《除你武器》: 缴械3秒, CD 5秒, 范围极近(80)
     expelliarmusRange: 80,
-    expelliarmusDuration: 3000,
+    expelliarmusDuration: 5000,
     expelliarmusCooldown: 5000,
     // 《盔甲护身》: 护盾500HP, 持续5秒, CD 7秒
     armorShieldHp: 500,
@@ -217,4 +228,26 @@ export const CHAR_STATS = {
     avadaMaxDamage: 2500,      // 最大伤害(需低血量+高MP)
     avadaMpDrainRate: 80,      // 蓄力时MP消耗速度/秒
   }
+};
+
+export const MAGIC_SPELL_LINES: Record<string, string> = {
+  stun: '昏昏倒地',
+  petrify: '统统石化',
+  sleep: '沉沉入梦',
+  fear: '震心慑魄',
+  charm: '意乱情迷',
+  taunt: '你过来啊',
+  silence: '无声无息',
+  root: '速速禁锢',
+  blind: '目眩失明',
+  slow: '障碍重重',
+  burn: '火焰熊熊',
+
+  disarm: '除你武器',
+  blink: '移形换影',
+  armor: '盔甲护身',
+
+  patronus: '呼神护卫',
+  avada: '阿瓦达啃大瓜',
+
 };

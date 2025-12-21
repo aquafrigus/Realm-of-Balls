@@ -94,6 +94,8 @@ export interface PlayerState extends GameEntity {
   wukongLastAttackTime: number; // For rendering attack animations
   wukongLastAttackType: 'COMBO_1' | 'COMBO_2' | 'COMBO_SMASH' | 'SKILL_SMASH' | 'THRUST' | 'NONE';
   wukongLastChargePct: number; // Store charge % at moment of release for rendering correct length
+  wukongUltKnockbackCharge?: number; // [New] Track if knocked back by Wukong Ult (>= 0.8 trigger)
+  wukongUltSourceDamage?: number; // [New] Store original damage for bonus calc
 
   // Cat Resources
   lives?: number; // 9 Lives mechanism
@@ -105,6 +107,14 @@ export interface PlayerState extends GameEntity {
   isPouncing: boolean;    // [新增] 是否处于飞扑（滞空）状态
   pounceTimer: number;
   hasPounceHit: boolean;  // [新增] 本次飞扑是否已经触发过攻击（防止对同一敌人多次触发）
+
+  // 状态追踪 (用于 UI/飘字)
+  _prevStatus?: {
+    tankMode?: TankMode;
+    isReloadingLmg?: boolean;
+    lives?: number;
+    isBurnedOut?: boolean;
+  };
 
   angle: number; // Body rotation
   aimAngle: number; // Turret/Aim rotation
@@ -142,12 +152,20 @@ export interface PlayerState extends GameEntity {
   hasteTimer?: number;
   slowTimer: number;
   isWet: boolean;
+  smashWidthMin?: number;
+  smashWidthMax?: number;
+  smashChargeTime?: number;
+  smashKnockbackMin?: number;
+  smashKnockbackMax?: number;
   burnTimer: number;
   flameExposure: number;
   bufferedInput: string;
   // 飘字系统专用字段
   statusLabel?: string;
+  statusLabelColor?: string; // [New] Override color for floating text
   statusLabelPos?: Vector2; // [New] Spawning position
+  statusQueue?: { text: string; color?: string; pos?: Vector2 }[]; // [New] Queue for multiple indicators
+  pendingStatusQueue?: { text: string; color?: string; pos?: Vector2 }[]; // [New] Buffer for floating texts during forced movement
   statusHistory: string[]; // [New] Track status application order for color priority
   aiSkipSkills?: boolean;
   stealth: boolean;
@@ -163,6 +181,7 @@ export interface PlayerState extends GameEntity {
   lightSpiritTimer?: number;      // 光灵球持续时间
   magicUltCharging?: boolean;     // 黑魔法大招蓄力状态
   magicUltChargeTime?: number;    // 蓄力时间
+  magicChargeTimer?: number;      // 普攻连续使用计时
   ccImmuneTimer?: number;         // 控制免疫计时器
 
   // AI specific
@@ -176,6 +195,15 @@ export interface PlayerState extends GameEntity {
   aiIsEvading?: boolean;
   aiEvasionDir?: Vector2;
   aiEvasionTimer?: number;
+  forcedMoveTimer?: number; // [New] Track if being knocked back
+  aimLockTimer?: number; // [New] Lock aim angle for auto-aim skills
+
+  // AI Movement Variance
+  aiSeed?: number;
+  aiPreferredDistOffset?: number; // +/- offset to optimal range
+  aiStrafeDir?: number; // 1 or -1
+  aiStrafeTimer?: number;
+  aiChangeDistTimer?: number;
 }
 
 export interface Projectile extends GameEntity {
@@ -183,13 +211,15 @@ export interface Projectile extends GameEntity {
   ownerId: string;
   maxLife: number;
   life: number;
-  projectileType: 'BULLET' | 'BOMB' | 'MAGMA_PROJ' | 'DRONE_SHOT' | 'MAGIC_SPELL' | 'MAGIC_BEAM';
+  projectileType: 'BULLET' | 'BOMB' | 'MAGMA_PROJ' | 'DRONE_SHOT' | 'MAGIC_SPELL' | 'MAGIC_BEAM' | 'EXPELLIARMUS';
   targetPos?: Vector2; // For lobbed shots
   isAoe?: boolean;
   aoeRadius?: number;
   hitTargets?: string[]; // IDs of entities already hit (for penetration)
   isEmp?: boolean; // New attribute: EMP attack
   damageType?: DamageType;
+  statusType?: string;
+  spawnedInsideWall?: boolean; // New: Allow firing from within walls
 }
 
 export interface GroundEffect {

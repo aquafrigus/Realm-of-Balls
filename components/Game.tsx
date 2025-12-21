@@ -3,7 +3,7 @@ import {
     CharacterType, GameState, PlayerState, Vector2, TankMode, GroundEffect, Obstacle, Drone, DamageType
 } from '../types';
 import {
-    MAP_SIZE, PHYSICS, CHAR_STATS, STATUS_CONFIG
+    MAP_SIZE, PHYSICS, CHAR_STATS, STATUS_CONFIG, MAGIC_SPELL_LINES, TERRAIN_CONFIG
 } from '../constants';
 
 import * as Utils from '../utils';
@@ -36,6 +36,7 @@ interface UIState {
     pCatLives: number;
     pCatCharge: number;
     pMp: number; pMaxMp: number; // Magic Ball MP
+    pMagicForm?: 'WHITE' | 'BLACK'; // Magic Ball Form
     eCatLives: number;
     eType: CharacterType;
     eDisplayName: string; // 最近敌人显示名称（用于无人机等）
@@ -70,42 +71,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     // 相机预热计时器：游戏开始后逐渐增加鼠标对相机的影响力，避免突然跳动
     const cameraWarmupRef = useRef<number>(0);
 
-    interface StatusSnapshot {
-        // === 基础状态 ===
-        wet: boolean;         // 湿身
-        burn: boolean;        // 灼烧
-        slow: boolean;        // 减速
-        overheat: boolean;    // 过热
 
-        // === 核心机制 ===
-        tankMode: TankMode;   // 重炮模式
-        lives: number;        // 剩余命数
-        lmgAmmo: number;      // 用于检测机枪装填完成
-        artAmmo: number;      // 用于检测重炮装填完成
-        isReloading: boolean; // 装填中
-
-        // === 控制状态 ===
-        fear: boolean;        // 恐惧
-        silence: boolean;     // 沉默
-        disarm: boolean;      // 缴械
-        stun: boolean;        // 硬控 (眩晕/拍扁/麻痹/瘫痪)
-        root: boolean;        // 束缚
-        sleep: boolean;       // 催眠（zZz）
-        petrify: boolean;     // 石化
-        blind: boolean;       // 致盲
-        taunt: boolean;       // 嘲讽
-        charm: boolean;       // 魅惑
-
-        // === 增益/特殊 ===
-        invincible: boolean;  // 无敌
-        stealth: boolean;     // 隐身
-        haste: boolean;       // 加速
-
-        // === 计数器 ===
-        idleTimer: number;    // 待机（zZz）
-    }
-
-    const prevStatus = useRef<Map<string, StatusSnapshot>>(new Map());
     const textCooldownsRef = useRef<Map<string, Record<string, number>>>(new Map());
 
     // Helper: Resolve highest priority status color & label
@@ -325,7 +291,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
 
             // 敌人永远是 team 1
-            const p2 = createPlayer(eType, spawns[1], 'enemy', 1, true);
+            let enemySpawnPos = spawns[1];
+            if (eType === CharacterType.COACH) {
+                enemySpawnPos = { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 };
+            }
+            const p2 = createPlayer(eType, enemySpawnPos, 'enemy', 1, true);
             return [p1, p2];
         }
     };
@@ -347,14 +317,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     const spawnPlayer = getRandomEdgePos();
     // Ensure enemy spawns reasonably far away
     let spawnEnemy = getRandomEdgePos();
-    if (enemyType === CharacterType.COACH) {
-        spawnEnemy = { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 }; // 强制中心
-    } else {
-        let attempts = 0;
-        while (Utils.dist(spawnPlayer, spawnEnemy) < 800 && attempts < 10) {
-            spawnEnemy = getRandomEdgePos();
-            attempts++;
-        }
+    let attempts = 0;
+    while (Utils.dist(spawnPlayer, spawnEnemy) < 800 && attempts < 10) {
+        spawnEnemy = getRandomEdgePos();
+        attempts++;
     }
 
     // Game State Ref
@@ -433,6 +399,14 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     const mouseRef = useRef<Vector2>({ x: 0, y: 0 });
     const mouseBtnsRef = useRef<{ [key: string]: boolean }>({});
 
+    const [showExitDialog, setShowExitDialog] = useState(false);
+    const showExitDialogRef = useRef(false);
+
+    // Sync Ref with State for Event Handlers
+    useEffect(() => {
+        showExitDialogRef.current = showExitDialog;
+    }, [showExitDialog]);
+
     const [uiState, setUiState] = useState<UIState>({
         pArtAmmo: 0, pMaxArtAmmo: 5, // Tank Artillery
         pLmgAmmo: 0, pMaxLmgAmmo: 200, pIsReloadingLmg: false, // Tank LMG
@@ -453,6 +427,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // Magic UI
         pMp: 0, pMaxMp: 200,
+        pMagicForm: 'WHITE',
 
         eCatLives: 0,
 
@@ -490,6 +465,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             });
             // Also some themed particles
             spawnParticles(p.pos, 30, p.color, 6, 2.0);
+
+            // [New] Entrance Line for Black Magic Ball
+            if (p.type === CharacterType.MAGIC && p.magicForm === 'BLACK') {
+                p.statusLabel = "为了更伟大的利益。";
+                p.statusLabelColor = "#22c55e";
+            }
         });
     }, []);
 
@@ -498,7 +479,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // 1. 先确定形态（如果是魔法球）
         const magicForm = type === CharacterType.MAGIC
-            ? (Math.random() < 0.000000001 ? 'BLACK' : 'WHITE') // 暂时先将黑化概率设置为超小概率，后续需要调试黑魔法球时再调整
+            ? (Math.random() < 0.00000000001 ? 'BLACK' : 'WHITE') // 暂时先将黑化概率设置为超小概率，后续需要调试黑魔法球时再调整
             : undefined;
         // 2. 根据形态选择颜色和主题色
         let color = stats.color;
@@ -611,12 +592,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // Magic Ball
             mp: stats.maxMp || 0,
             maxMp: stats.maxMp || 0,
-            magicForm: type === CharacterType.MAGIC ? (Math.random() < 0.0000001 ? 'BLACK' : 'WHITE') : undefined,
+            magicForm: magicForm,
             magicShieldHp: 0,
             magicShieldTimer: 0,
             lightSpiritTimer: 0,
             magicUltCharging: false,
             magicUltChargeTime: 0,
+            magicChargeTimer: 0,
             ccImmuneTimer: 0,
 
             // AI defaults
@@ -627,12 +609,33 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             burstTimer: 0,
             bufferedInput: 'NONE',
             statusHistory: [], // [New]
+
+            // AI Variance
+            aiSeed: Math.random(),
+            aiPreferredDistOffset: (Math.random() - 0.5) * 100,
+            aiStrafeDir: Math.random() < 0.5 ? 1 : -1,
+            aiStrafeTimer: 0,
+            aiChangeDistTimer: 0,
+            forcedMoveTimer: 0,
         };
     }
 
     // --- Input ---
 
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
+        // [New] ESC Control Logic
+        if (e.code === 'Escape') {
+            // Only allow toggling if game is still playing
+            if (stateRef.current.gameStatus === 'PLAYING') {
+                setShowExitDialog(prev => !prev);
+                if (!showExitDialogRef.current) Sound.playUI('HOVER'); // Play sound on open
+            }
+            return;
+        }
+
+        // Block other inputs if dialog is open
+        if (showExitDialogRef.current) return;
+
         keysRef.current[e.code] = true;
         const p = getHumanPlayer();
         if (p.isDead || p.isBot) return;
@@ -735,7 +738,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (p.catIsCharging) {
                 p.catIsCharging = false;
                 const chargeTime = (performance.now() - (p.catChargeStartTime || 0)) / 1000;
-                if (chargeTime < 0.3) {
+                if (chargeTime < CHAR_STATS[CharacterType.CAT].pounceChargeThreshold) {
                     // Short click -> Scratch
                     handleCatScratch(p);
                 } else {
@@ -788,7 +791,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             'charm': 'charmTimer',
             'stealth': 'stealthTimer',
             'haste': 'hasteTimer',
-            'invincible': 'invincibleTimer'
+            'invincible': 'invincibleTimer',
+            'wet': 'isWet',
+            'heal': 'hp',
+            'revive': 'isDead'
         };
 
         // [New] Update Status History for Color Logic (Latest Applied)
@@ -810,26 +816,35 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         const propKey = map[type];
 
-
         // Apply
         if (propKey) {
             (target as any)[propKey] = Math.max((target as any)[propKey] || 0, duration);
+
+            // [New] Use statusQueue instead of single statusLabel
+            if (STATUS_CONFIG[type]) {
+                const label = STATUS_CONFIG[type].label.split('|')[0];
+                const item = {
+                    text: label + '!',
+                    color: STATUS_CONFIG[type].color,
+                    pos: pos
+                };
+
+                // [New] Categorize statuses: Behavior inducing ones should be immediate
+                const immediateStatuses = ['fear', 'charm', 'taunt'];
+                const isImmediateStatus = immediateStatuses.includes(type);
+
+                // [New] If in forced movement AND not an immediate status, buffer it
+                if ((target.forcedMoveTimer || 0) > 0 && !isImmediateStatus) {
+                    if (!target.pendingStatusQueue) target.pendingStatusQueue = [];
+                    target.pendingStatusQueue.push(item);
+                } else {
+                    if (!target.statusQueue) target.statusQueue = [];
+                    target.statusQueue.push(item);
+                }
+            }
         }
         if (type === 'taunt' && sourceId) {
             target.tauntSourceId = sourceId;
-        }
-
-
-        // Only set label if it's a debuff (simple check: exists in labelMap)
-        // [Modified] Use STATUS_CONFIG for consistent labels
-        const config = STATUS_CONFIG[type];
-        if (config) {
-            const pickedLabel = config.label.split('|')[0];
-            target.statusLabel = pickedLabel + '!';
-            // [New] Store position if provided
-            if (pos) {
-                target.statusLabelPos = { ...pos };
-            }
         }
 
         // [New] Wet Status Logic (Cleansing)
@@ -920,21 +935,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 const dir = Utils.normalize(Utils.sub(e.pos, p.pos));
                 applyKnockback(e, dir, force);
 
+                // 哈气效果 - applyStatus 内部会自动调用 interruptAction 打断蓄力
                 if (isLastLife) {
                     applyStatus(e, 'fear', 2.5);
                 } else {
-                    if (!isMechanical(e)) {
-                        applyStatus(e, 'disarm', 2.5);
-                    }
-                    applyStatus(e, 'silence', 2.5);
                     applyStatus(e, 'charm', 1.5);
-                }
-
-                if (e.type === CharacterType.WUKONG) {
-                    e.wukongChargeState = 'NONE';
-                    e.wukongChargeTime = 0;
-                    e.wukongChargeHoldTimer = 0;
-                    e.wukongLastAttackType = 'NONE';
+                    if (!isMechanical(e)) e.statusLabel = "被萌翻!";
                 }
             }
         });
@@ -1149,7 +1155,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     } else {
                         // Hitstun
                         target.vel = { x: 0, y: 0 };
-                        target.slowTimer = 0.2;
+                        applyStatus(target, 'slow', 0.2, p.id);
                         takeDamage(target, stats.scratchDamage);
                         spawnParticles(target.pos, 8, '#f0abfc', 4);
                     }
@@ -1167,9 +1173,14 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (p.attackCooldown > 0) return;
 
         const stats = CHAR_STATS[CharacterType.MAGIC];
-        if ((p.mp || 0) < stats.curseManaCost) return;
 
-        p.mp! -= stats.curseManaCost;
+        // Dynamic Mana Cost Calculation
+        const rampFactor = Math.min(1, (p.magicChargeTimer || 0) / stats.curseRampUpTime);
+        const currentCost = stats.curseManaCost + (stats.curseManaMaxCost - stats.curseManaCost) * rampFactor;
+
+        if ((p.mp || 0) < currentCost) return;
+
+        p.mp! -= currentCost;
         p.attackCooldown = stats.curseCooldown / 1000;
 
 
@@ -1181,6 +1192,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Origin at wand tip
         const spawnPos = Utils.add(p.pos, Utils.mult(dir, p.radius + wandLength));
 
+        // [Modified] Pick Status Effect at CAST time
+        const allDebuffs = Object.keys(STATUS_CONFIG).filter(k =>
+            !STATUS_CONFIG[k].isPositive && k !== 'disarm' && k !== 'wet'
+        );
+        const statusType = allDebuffs[Math.floor(Math.random() * allDebuffs.length)];
+
         stateRef.current.projectiles.push({
             id: Math.random().toString(),
             ownerId: p.id,
@@ -1189,17 +1206,24 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             radius: 6,
             mass: 1,
             color: isWhite ? '#fef08a' : '#22c55e',
-            damage: 0, // 不直接造成伤害，而是施加状态
+            damage: 0,
             projectileType: 'MAGIC_SPELL',
             life: stats.curseRange / (stats.curseSpeed * 60),
             maxLife: stats.curseRange / (stats.curseSpeed * 60),
+            statusType: statusType, // [New] Store status
+
+            // [New] Check if spawning inside a wall AND caster is also inside (to prevent shooting through walls from outside)
+            spawnedInsideWall: stateRef.current.obstacles.some(obs =>
+                (obs.type === 'WALL' || obs.type === 'WATER') &&
+                Utils.checkCircleRectCollision(p.pos, p.radius * 0.5, obs).collided // Caster body (safer 0.5r check)
+            ) && stateRef.current.obstacles.some(obs =>
+                (obs.type === 'WALL' || obs.type === 'WATER') &&
+                Utils.checkCircleRectCollision(spawnPos, 6, obs).collided
+            )
         });
 
-        // 飘字
-        const curseWords = isWhite
-            ? ['呼啦啦!', '昏昏倒地!', '统统石化!']
-            : ['嘶嘶嘶...', '诅咒你...', '黑暗降临...'];
-        p.statusLabel = curseWords[Math.floor(Math.random() * curseWords.length)];
+        Sound.playShot('MAGIC');
+
     };
 
     // 计算最安全位置（用于移形换影）
@@ -1243,42 +1267,74 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     // 右键技能 - 随机保命咒语
+    // 右键技能 - 随机保命咒语
     const handleMagicProtection = (p: PlayerState) => {
         if (!canUseSecondarySkill(p)) return;
         if (p.secondarySkillCooldown > 0) return;
 
         const stats = CHAR_STATS[CharacterType.MAGIC];
-        if ((p.mp || 0) < stats.protectManaCost) return;
 
-        p.mp! -= stats.protectManaCost;
-
+        // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
         const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
-            // 《除你武器》- 近身缴械
+            // 《除你武器》
+            // Cost: 100 MP
+            if ((p.mp || 0) < stats.expelliarmusManaCost!) return; // Fizzle if not enough mana
+
+            p.mp! -= stats.expelliarmusManaCost!;
+
+            // 自动瞄准最近敌人
             const nearest = getNearestEnemy(p);
-            if (nearest && Utils.dist(p.pos, nearest.pos) < stats.expelliarmusRange + nearest.radius) {
-                applyStatus(nearest, 'disarm', stats.expelliarmusDuration / 1000);
-                nearest.statusLabel = '缴械!';
-                spawnParticles(nearest.pos, 10, p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e', 4);
-                p.statusLabel = '除你武器!';
-            } else {
-                p.statusLabel = '除你武器!';
-                // MP部分返还（未命中）
-                p.mp! += stats.protectManaCost * 0.5;
+            let targetPos = Utils.add(p.pos, { x: Math.cos(p.aimAngle) * 100, y: Math.sin(p.aimAngle) * 100 });
+
+            if (nearest) {
+                // Instant face
+                const aimAngle = Math.atan2(nearest.pos.y - p.pos.y, nearest.pos.x - p.pos.x);
+                p.aimAngle = aimAngle;
+                p.aimLockTimer = 0.3; // Lock aim for 0.3s to show wand turn
+                targetPos = nearest.pos;
             }
-            p.secondarySkillCooldown = stats.expelliarmusCooldown / 1000;
+
+            // Fire Projectile
+            const dir = Utils.normalize(Utils.sub(targetPos, p.pos));
+            stateRef.current.projectiles.push({
+                id: Math.random().toString(),
+                ownerId: p.id,
+                pos: Utils.add(p.pos, Utils.mult(dir, p.radius + 15)),
+                vel: Utils.mult(dir, stats.curseSpeed), // Use curse speed
+                radius: 8,
+                mass: 5,
+                color: p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e',
+                projectileType: 'EXPELLIARMUS',
+                life: 1.5,
+                maxLife: 1.5,
+                damage: 0, // No damage, just disarm
+            });
+
+            Sound.playShot('MAGIC');
+            p.statusLabel = MAGIC_SPELL_LINES.disarm + '!';
+            // 瞬间进入CD: 5s
+            p.secondarySkillCooldown = 5;
         }
         else if (spell === 1) {
             // 《盔甲护身》- 护盾
+            // Cost: 40 MP
+            if ((p.mp || 0) < stats.protectManaCost) return;
+            p.mp! -= stats.protectManaCost;
+
             p.magicShieldHp = stats.armorShieldHp;
             p.magicShieldTimer = stats.armorDuration / 1000;
-            p.statusLabel = '盔甲护身!';
+            p.statusLabel = MAGIC_SPELL_LINES.armor + '!';
             spawnParticles(p.pos, 15, '#c0c0c0', 5, 0.8);
             p.secondarySkillCooldown = stats.armorCooldown / 1000;
         }
         else {
             // 《移形换影》- 解控+闪现
+            // Cost: 40 MP
+            if ((p.mp || 0) < stats.protectManaCost) return;
+            p.mp! -= stats.protectManaCost;
+
             // 解除所有控制
             p.stunTimer = 0; p.rootTimer = 0; p.slowTimer = 0;
             p.fearTimer = 0; p.silenceTimer = 0; p.disarmTimer = 0;
@@ -1294,7 +1350,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 生成闪现特效（终点）
             spawnParticles(p.pos, 20, p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e', 6, 0.5);
 
-            p.statusLabel = '移形换影!';
+            p.statusLabel = MAGIC_SPELL_LINES.blink + '!';
+            p.statusLabelColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
             p.secondarySkillCooldown = stats.blinkCooldown / 1000;
         }
     };
@@ -1346,7 +1403,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 召唤光灵球
             p.lightSpiritTimer = stats.lightSpiritDuration / 1000;
             p.ccImmuneTimer = stats.lightSpiritDuration / 1000;
-            p.statusLabel = '呼神护卫!';
+            p.statusLabel = MAGIC_SPELL_LINES.patronus + '!';
 
             // 屏幕震动
             stateRef.current.screenShakeTimer = 0.5;
@@ -1413,7 +1470,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 size: 20,
             });
 
-            p.statusLabel = '阿瓦达啃大瓜!';
+            p.statusLabel = MAGIC_SPELL_LINES.avada + '!';
 
             // 屏幕震动
             stateRef.current.screenShakeTimer = 0.6;
@@ -1654,7 +1711,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                             // 附加状态 (灼烧)
                             if (t.type !== CharacterType.PYRO) {
-                                t.burnTimer = 5.0;
+                                applyStatus(t, 'burn', 5.0, p.id);
                                 t.flameExposure = 100;
                             }
                         }
@@ -1702,7 +1759,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             hitRange = 180;
             hitArc = Math.PI / 3;
             Sound.playSkill('SMASH_HIT');
-            spawnParticles(Utils.add(p.pos, Utils.mult(knockbackDir, 100)), 20, '#fbbf24', 8, 0.4);
+            spawnParticles(Utils.add(p.pos, Utils.mult(knockbackDir, 100)), 20, stats.color, 8, 0.4);
         } else {
             Sound.playShot('SWING');
         }
@@ -1733,7 +1790,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         // Damage Player
                         takeDamage(target, damage, CharacterType.WUKONG);
                         applyKnockback(target, knockbackDir, knockback);
-                        spawnParticles(target.pos, 5, '#fef08a', 4);
+                        spawnParticles(target.pos, 5, stats.color, 4);
                     }
                     Sound.playHit();
                 }
@@ -1790,7 +1847,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 } else {
                     takeDamage(target, damage, CharacterType.WUKONG);
                     applyKnockback(target, dir, 800 * (1 + chargePct));
-                    spawnParticles(target.pos, 12, '#fef08a', 8);
+                    spawnParticles(target.pos, 12, stats.color, 8);
                     // 右键命中敌人飘字
                     p.statusLabel = "呔!";
                 }
@@ -1838,7 +1895,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const dist = Utils.distToSegment({ x: obs.x + obs.width / 2, y: obs.y + obs.height / 2 }, startPos, endPos);
             const collisionDist = width / 2 + Math.max(obs.width, obs.height) / 2; // Approximate collision
             if (dist < collisionDist) {
-                spawnParticles({ x: obs.x + obs.width / 2, y: obs.y + obs.height / 2 }, 30, '#475569', 12, 1.2);
+                spawnParticles({ x: obs.x + obs.width / 2, y: obs.y + obs.height / 2 }, TERRAIN_CONFIG.WALL_SHATTER_PARTICLE_COUNT, TERRAIN_CONFIG.WALL_DEBRIS_COLOR, 12, 1.2);
                 return false; // Destroy wall
             }
             return true;
@@ -1888,24 +1945,22 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 // 大幅增加击退效果 (以玩家为中心向外推)
                 const pushDir = Utils.normalize(Utils.sub(target.pos, p.pos));
-                applyKnockback(target, pushDir, 1800 + 600 * chargePct);
+                // Use defined stats for knockback
+                const currentKnockback = stats.smashKnockbackMin + (stats.smashKnockbackMax - stats.smashKnockbackMin) * chargePct;
+                applyKnockback(target, pushDir, currentKnockback);
 
                 // 眩晕所有命中的球
                 applyStatus(target, 'stun', 2.0);
                 target.slowTimer = 1.5;
 
-                // 打断施法效果
-                if (target.type === CharacterType.WUKONG) {
-                    target.wukongChargeState = 'NONE';
-                    target.wukongChargeTime = 0;
-                    target.wukongChargeHoldTimer = 0;
-                }
-                if (target.type === CharacterType.CAT) {
-                    target.catIsCharging = false;
-                    target.isPouncing = false;
-                }
+                // 打断施法效果 (使用统一的interruptAction)
+                interruptAction(target);
 
-                spawnParticles(target.pos, 15, '#ef4444', 10);
+                // [New] Set Wukong Ult Knockback state
+                target.wukongUltKnockbackCharge = chargePct;
+                target.wukongUltSourceDamage = damage;
+
+                spawnParticles(target.pos, 15, stats.color, 10);
                 Sound.playHit();
             }
         });
@@ -1944,6 +1999,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const impulse = force * 2;
         const dv = Utils.mult(dir, impulse / target.mass);
         target.vel = Utils.add(target.vel, dv);
+
+        // [New] Set forced movement timer to allow entering hazards (Water)
+        // Increased to 1.0s to better cover long knockbacks (e.g. Wukong Ult)
+        target.forcedMoveTimer = 1.0;
     };
 
     const killEntity = (entity: any, killerId: string) => {
@@ -2028,6 +2087,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     entity.hp = entity.maxHp;
                     entity.pos = { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 };
                     entity.vel = { x: 0, y: 0 };
+                    applyStatus(entity, 'revive', 0);
                     entity.statusLabel = "很好!很有精神!";
                     return;
                 }
@@ -2118,6 +2178,27 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
             p1.vel = Utils.mult(p1.vel, PHYSICS.FRICTION);
 
+            // [New] Cleanup Wukong Knockback State when slow
+            if (Utils.mag(p1.vel) < 50 && p1.wukongUltKnockbackCharge) {
+                p1.wukongUltKnockbackCharge = undefined;
+                p1.wukongUltSourceDamage = undefined;
+            }
+
+            // [New] Trigger pending status texts when forced movement ends or unit stops
+            if ((p1.pendingStatusQueue?.length || 0) > 0) {
+                // End condition: Timer expired OR Velocity low (Stopped)
+                const isTimerActive = (p1.forcedMoveTimer || 0) > 0;
+                const isMovingFast = Utils.mag(p1.vel) > 10.0;
+
+                if (!isTimerActive || !isMovingFast) {
+                    if (!p1.statusQueue) p1.statusQueue = [];
+                    if (p1.pendingStatusQueue) {
+                        p1.statusQueue.push(...p1.pendingStatusQueue);
+                        p1.pendingStatusQueue = [];
+                    }
+                }
+            }
+
             // [Safety] Ensure pos is finite
             if (!Number.isFinite(p1.pos.x)) p1.pos.x = MAP_SIZE.width / 2;
             if (!Number.isFinite(p1.pos.y)) p1.pos.y = MAP_SIZE.height / 2;
@@ -2130,6 +2211,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             // 障碍物碰撞与地形判定 (Obstacles & Terrain Priority)
             p1.isVaulting = false;
+
+            // [Pre-calc] Check if forced movement is active
+            const isForced = (p1.forcedMoveTimer || 0) > 0 ||
+                (p1.fearTimer || 0) > 0 ||
+                (p1.tauntTimer || 0) > 0 ||
+                (p1.charmTimer || 0) > 0;
 
             // [新增] 先确定玩家当前所站的最高优先级地形
             const standingOnZones = state.obstacles.filter(obs => {
@@ -2146,7 +2233,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             state.obstacles.forEach(obs => {
                 // [修改] 地形碰撞逻辑
                 // Wukong 特性：两栖 (可以自由进出水域)
-                if (obs.type === 'WATER' && p1.type === CharacterType.WUKONG) return;
+                if (obs.type === 'WATER') {
+                    if (p1.type === CharacterType.WUKONG) return;
+
+                    // [New] Allow entering water if Forced OR already Wet (Sticky)
+                    // Allows smooth entry and prevents being popped out if deeply submerged
+                    if (isForced || p1.isWet) return;
+                }
 
                 // 默认：只有 WALL 和 WATER 会产生物理碰撞 (其他类型忽略)
                 if (obs.type !== 'WALL' && obs.type !== 'WATER') return;
@@ -2195,6 +2288,23 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         p1.pos = Utils.add(p1.pos, Utils.mult(col.normal, col.overlap));
                         const dot = p1.vel.x * col.normal.x + p1.vel.y * col.normal.y;
                         p1.vel = Utils.sub(p1.vel, Utils.mult(col.normal, 2 * dot));
+
+                        // [New] Wukong Ult Wall Collision Logic
+                        if (obs.type === 'WALL' && (p1.wukongUltKnockbackCharge || 0) >= 0.8) {
+                            const bonusDmg = (p1.wukongUltSourceDamage || 0) * 0.2;
+                            if (bonusDmg > 0) {
+                                takeDamage(p1, bonusDmg, CharacterType.WUKONG);
+                                Sound.playHit(); // Or a heavy impact sound
+                                spawnParticles(p1.pos, 20, TERRAIN_CONFIG.WALL_DEBRIS_COLOR, 8, 1);
+                            }
+
+                            // Destroy Wall
+                            state.obstacles = state.obstacles.filter(o => o.id !== obs.id);
+                            spawnParticles({ x: obs.x + obs.width / 2, y: obs.y + obs.height / 2 }, 40, TERRAIN_CONFIG.WALL_DEBRIS_COLOR, 15, 2);
+
+                            // Clear flag after impact to prevent multiple hits
+                            p1.wukongUltKnockbackCharge = undefined;
+                        }
                     }
                 });
             }
@@ -2208,10 +2318,24 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 按优先级降序排列
             coveringZones.sort((a, b) => (b.priority || 0) - (a.priority || 0));
             const topTerrain = coveringZones[0]; // 取最高优先级的地形
-            // 判定：如果最高优先级是 WATER，则湿身；如果是 WALL (即使重叠了水)，则以墙为准(干燥)
+
+            // [Modified] Improved Wet Logic with Hysteresis ("Sticky Water")
+            const isCenterInWater = topTerrain?.type === 'WATER';
+
+            // Check if physically touching any water obstacle (Radius check)
+            const isTouchingWater = state.obstacles.some(obs =>
+                obs.type === 'WATER' && Utils.checkCircleRectCollision(p1.pos, p1.radius, obs).collided
+            );
+
             const wasWet = p1.isWet;
-            // [Modified] Ensure not pouncing (mid-air) to avoid triggering "Wet" before landing
-            p1.isWet = topTerrain?.type === 'WATER' && !p1.isPouncing;
+            // Become/Stay Wet if:
+            // 1. Center is inside water (Deep)
+            // 2. Already Wet AND Still Touching (Sticky - prevents popping out at edge)
+            // 3. Forced AND Touching (Shallow Entry Support)
+            const shouldBeWet = isCenterInWater || (wasWet && isTouchingWater) || (isForced && isTouchingWater);
+
+            p1.isWet = shouldBeWet && !p1.isPouncing;
+
             if (!wasWet && p1.isWet) {
                 // [Modified] Pass current position to ensure floating text appears at entry point
                 applyStatus(p1, 'wet', 0, undefined, p1.pos);
@@ -2284,11 +2408,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         applyStatus(target, 'disarm', 2.5);
                         applyStatus(target, 'silence', 2.5);
 
-                        // Special Wukong Interrupt (Keep manual for specific logic or move to applyStatus if generic?)
-                        // interrupt logic is unique to Wukong here.
-                        if (target.type === CharacterType.WUKONG) {
-                            target.wukongChargeState = 'NONE'; target.wukongChargeTime = 0;
-                        }
+                        // 蓄力打断由 applyStatus('silence') 自动触发 interruptAction
                         const dmg = CHAR_STATS[CharacterType.CAT].scratchDamage;
                         takeDamage(target, dmg, CharacterType.CAT);
                         spawnParticles(target.pos, 15, '#f0abfc', 6);
@@ -2304,59 +2424,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // [集中管理] 全局状态飘字系统
         state.players.forEach(p => {
-            // 1. 初始化上一帧状态 (Snapshot)
-            const prev = prevStatus.current.get(p.id) || {
-                wet: false, burn: false, slow: false, overheat: false,
-                tankMode: TankMode.ARTILLERY, lives: p.lives || 0,
-                fear: false, silence: false, disarm: false, stun: false,
-                root: false, sleep: false, petrify: false, blind: false, taunt: false, charm: false,
-                invincible: false, stealth: false, haste: false,
-                isReloading: false,
-                lmgAmmo: p.type === CharacterType.TANK ? p.maxLmgAmmo : 0,
-                artAmmo: p.type === CharacterType.TANK ? p.maxArtilleryAmmo : 0,
-                idleTimer: 0
-            };
-
-            // 2. 获取当前状态 (Computed Snapshot)
-            const curr = {
-                // === 基础状态 ===
-                wet: p.isWet,
-                burn: p.burnTimer > 0,
-                slow: p.slowTimer > 0,
-                overheat: p.isBurnedOut,
-
-                // === 核心机制 ===
-                tankMode: p.tankMode,
-                lives: p.lives || 0,
-                lmgAmmo: p.type === CharacterType.TANK ? p.lmgAmmo : 0,
-                artAmmo: p.type === CharacterType.TANK ? p.artilleryAmmo : 0,
-                isReloading: p.isReloadingLmg,
-
-                // === 控制状态 ===
-                fear: p.fearTimer > 0,
-                silence: p.silenceTimer > 0,
-                disarm: p.disarmTimer > 0,
-                stun: p.stunTimer > 0,
-                root: p.rootTimer > 0,
-                sleep: p.sleepTimer > 0,
-                petrify: (p.petrifyTimer || 0) > 0,
-                blind: p.blindTimer > 0,
-                taunt: p.tauntTimer > 0,
-                charm: (p.charmTimer || 0) > 0,
-
-                // === 增益/特殊 ===
-                invincible: (p.invincibleTimer || 0) > 0,
-                stealth: (p.stealthTimer || 0) > 0,
-                haste: (p.hasteTimer || 0) > 0,
-
-                // === 计数器 ===
-                idleTimer: p.idleTimer || 0
-            };
-
-            // 辅助：从 label 中取第一个选项（| 分隔符用于允许特定技能覆盖）
-            const pickLabel = (label: string): string => {
-                return label.split('|')[0];
-            };
+            // 1. 初始化追踪字段 (用于 UI/飘字)
+            if (!p._prevStatus) {
+                p._prevStatus = {
+                    tankMode: p.tankMode,
+                    isReloadingLmg: p.isReloadingLmg,
+                    lives: p.lives || 0,
+                    isBurnedOut: p.isBurnedOut,
+                };
+            }
+            const prev = p._prevStatus;
 
             // 辅助：飘字生成
             const spawn = (text: string, color: string, velY = -1.0, size = 16, overridePos?: Vector2) => {
@@ -2368,113 +2445,118 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 }
                 const cooldowns = textCooldownsRef.current.get(p.id)!;
 
-                // 2. 冷却检查 (防止同一内容的字频繁出现)
+                // 2. 冷却检查 (动态读取配置中的 CD，默认为 800ms)
                 const lastTime = cooldowns[text] || 0;
-                const cdDuration = text === "减速" ? 1200 : 800;
+
+                // 查找该文本对应的状态配置以获取 CD
+                const matchedKey = Object.keys(STATUS_CONFIG).find(k => {
+                    const labels = STATUS_CONFIG[k].label.split('|');
+                    return labels.some(l => text.includes(l));
+                });
+                const cdDuration = (matchedKey ? STATUS_CONFIG[matchedKey].floatingTextCD : undefined) || 800;
 
                 if (now - lastTime < cdDuration) return; // 冷却中，不飘字
 
                 // 3. 更新冷却时间
                 cooldowns[text] = now;
 
+                const offsetX = (Math.random() - 0.5) * 60;
+                const offsetY = (Math.random() - 0.5) * 30; // [New] Vertical randomness
+
                 state.floatingTexts.push({
                     id: Math.random().toString(),
-                    pos: overridePos ? { ...overridePos, y: overridePos.y - 20 } : { x: p.pos.x + (Math.random() - 0.5) * 60, y: p.pos.y - p.radius - 40 },
+                    pos: overridePos
+                        ? { x: overridePos.x + offsetX * 0.5, y: overridePos.y - 20 + offsetY }
+                        : { x: p.pos.x + offsetX, y: p.pos.y - p.radius - 40 + offsetY },
                     text, color, size,
                     life: 2.0,
                     maxLife: 2.0,
                     velY
                 });
             };
+            //    A. 处理飘字标签 (支持优先级与多标签)
+            if (!p.statusQueue) p.statusQueue = [];
 
-            let labelShown = false;
-
-            //    A. 优先处理显式标签
+            // [新增优先级逻辑] 显式 statusLabel 具有最高优先级，且通常是唯一的。
             if (p.statusLabel) {
-                const text = p.statusLabel;
-                const matchedKey = Object.keys(STATUS_CONFIG).find(k => {
-                    const labels = STATUS_CONFIG[k].label.split('|');
-                    return labels.some(l => text.includes(l));
-                });
-                const color = matchedKey ? STATUS_CONFIG[matchedKey].color : p.color;
-
-                // [Modified] Use stored position if available, otherwise default to head
-                // This fixes the issue where high velocity players (Cat Pounce) show text at start position
-                if (p.statusLabelPos) {
-                    spawn(text, color, -1.5, 16, p.statusLabelPos); // We need to update spawn args too? No, let's overload or modify logic below
-                    // Wait, spawn function uses random offset from p.pos.
-                    // Let's modify spawn to accept override pos.
-                } else {
-                    spawn(text, color, -1.5);
-                }
-
+                // 如果设置了特定标签，直接清空队列，仅显示该特定标签
+                p.statusQueue = [{
+                    text: p.statusLabel,
+                    color: p.statusLabelColor,
+                    pos: p.statusLabelPos
+                }];
                 p.statusLabel = undefined;
-                p.statusLabelPos = undefined; // Clear position
-                labelShown = true;
+                p.statusLabelColor = undefined;
+                p.statusLabelPos = undefined;
             }
 
-            //    B. 瞬时事件标记
+            if (p.statusQueue.length > 0) {
+                p.statusQueue.forEach((item, index) => {
+                    const text = item.text;
+                    const matchedKey = Object.keys(STATUS_CONFIG).find(k => {
+                        const labels = STATUS_CONFIG[k].label.split('|');
+                        return labels.some(l => text.includes(l));
+                    });
+                    let color = item.color || (matchedKey ? STATUS_CONFIG[matchedKey].color : p.color);
 
+                    // 如果有多个飘字，稍微错开位置，再加上随机偏移，极大减少重叠
+                    const verticalOrderOffset = index * 25;
+                    const randomOffsetX = (Math.random() - 0.5) * 40;
+                    const randomOffsetY = (Math.random() - 0.5) * 20;
+
+                    const spawnPos = item.pos
+                        ? { x: item.pos.x + randomOffsetX, y: item.pos.y - verticalOrderOffset + randomOffsetY }
+                        : { x: p.pos.x + randomOffsetX, y: p.pos.y - p.radius - 40 - verticalOrderOffset + randomOffsetY };
+
+                    spawn(text, color, -1.5, 16, spawnPos);
+                });
+
+                p.statusQueue = []; // 清空队列
+            }
+            //    B. 瞬时事件标记
             if (p.burstFlag) {
                 spawn("爆燃!", '#ef4444', -3.0); // 红色大字
                 p.burstFlag = false; // 消费掉
-                labelShown = true;
             }
-
             //    C. 状态变化检测
             // 1. 基础物理/元素 (使用 CONFIG 配置)
-            if (!prev.overheat && curr.overheat) spawn("燃尽!", '#ef4444');
-            if (!prev.slow && curr.slow && !curr.stun && !curr.sleep && !labelShown) spawn(STATUS_CONFIG.slow.label, STATUS_CONFIG.slow.color);
+            if (!prev.isBurnedOut && p.isBurnedOut) spawn("燃尽!", '#ef4444');
 
-            // 2. 控制状态
-            // 恐惧
-            if (!prev.fear && curr.fear && !labelShown) spawn(STATUS_CONFIG.fear.label + '!', STATUS_CONFIG.fear.color);
-
-            // 萌翻/踩 (保留特殊组合逻辑，但使用 Charm 颜色)
-            const isCharmed = curr.silence && curr.disarm && !curr.fear && !curr.stun;
-            const wasCharmed = prev.silence && prev.disarm;
-            if (!wasCharmed && isCharmed && !labelShown) spawn("被萌翻!", STATUS_CONFIG.charm.color);
-
-            // 单独控制
-            if (!prev.silence && curr.silence && !isCharmed && !labelShown) spawn(STATUS_CONFIG.silence.label, STATUS_CONFIG.silence.color);
-            if (!prev.disarm && curr.disarm && !isCharmed && !labelShown) spawn(STATUS_CONFIG.disarm.label, STATUS_CONFIG.disarm.color);
-            if (!prev.root && curr.root && !labelShown) spawn(STATUS_CONFIG.root.label, STATUS_CONFIG.root.color);
-            if (!prev.blind && curr.blind && !labelShown) spawn(STATUS_CONFIG.blind.label, STATUS_CONFIG.blind.color);
-            if (!prev.taunt && curr.taunt && !labelShown) spawn(STATUS_CONFIG.taunt.label + '!', STATUS_CONFIG.taunt.color);
-            if (!prev.charm && curr.charm && !labelShown) spawn(pickLabel(STATUS_CONFIG.charm.label) + '!', STATUS_CONFIG.charm.color);
-
-            // 眩晕/催眠
-            if (!prev.stun && curr.stun && !labelShown) spawn(pickLabel(STATUS_CONFIG.stun.label), STATUS_CONFIG.stun.color);
-            if (!prev.sleep && curr.sleep && !labelShown) spawn(STATUS_CONFIG.sleep.label, STATUS_CONFIG.sleep.color);
+            // 2. 控制状态 (大部分已由 applyStatus -> statusQueue 自动处理，此处仅作为非标准状态的扩展位)
 
             // 3. 核心机制
             // 坦克模式
-            if (p.type === CharacterType.TANK && prev.tankMode !== curr.tankMode) {
-                if (curr.tankMode === TankMode.LMG) spawn("加速!", '#34d399');
+            if (p.type === CharacterType.TANK && prev.tankMode !== p.tankMode) {
+                if (p.tankMode === TankMode.LMG) spawn("加速!", '#34d399');
                 else spawn("重炮模式", '#fbbf24');
             }
 
             // 装填
-            if (!prev.isReloading && curr.isReloading) {
+            if (!prev.isReloadingLmg && p.isReloadingLmg) {
                 spawn("装填中...", '#fbbf24');
             }
             // 轻机枪装填完毕
-            if (prev.isReloading && !curr.isReloading) {
+            if (prev.isReloadingLmg && !p.isReloadingLmg) {
                 spawn("装填完毕!", '#34d399');
             }
 
             // 命数变化
-            if (curr.lives < prev.lives && curr.lives > 0) {
-                spawn(`剩余命数: ${curr.lives}`, '#fbbf24', -2.0);
+            if ((p.lives || 0) < (prev.lives || 0) && (p.lives || 0) > 0) {
+                spawn(`剩余命数: ${p.lives}`, '#fbbf24', -2.0);
             }
 
             // 4. 持续/周期性状态
-            if ((curr.sleep || curr.idleTimer > 3.0) && Math.random() < 0.01) {
+            if ((p.sleepTimer > 0 || (p.idleTimer || 0) > 3.0) && Math.random() < 0.01) {
                 spawn("zZz", '#ffffff', -0.5);
             }
 
-            // --- 更新快照 ---
-            prevStatus.current.set(p.id, curr);
+            // --- 更新追踪快照 ---
+            p._prevStatus = {
+                tankMode: p.tankMode,
+                isReloadingLmg: p.isReloadingLmg,
+                lives: p.lives || 0,
+                isBurnedOut: p.isBurnedOut,
+            };
         });
 
         updateCamera(state);
@@ -2560,7 +2642,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             if (p.fuel <= 0) {
                                 p.fuel = 0;
                                 p.isBurnedOut = true;
-                                Sound.playOverheat();
+                                Sound.playBurnout();
                                 spawnParticles(p.pos, 15, '#ffffff', 5, 0.5);
                             }
                             fireFlamethrower(p, dt);
@@ -2734,7 +2816,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             p.aimAngle += change;
         } else {
             // 非坦克：任何控制状态下禁止自主瞄准
-            if (!isControlled(p)) {
+            // [新增] 瞄准锁定状态下禁止鼠标干预 (Expelliarmus)
+            if (!isControlled(p) && (p.aimLockTimer || 0) <= 0) {
                 p.aimAngle = targetAimAngle;
             }
         }
@@ -2776,7 +2859,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     if (p.fuel <= 0) {
                         p.fuel = 0;
                         p.isBurnedOut = true;
-                        Sound.playOverheat();
+                        Sound.playBurnout();
                         spawnParticles(p.pos, 15, '#ffffff', 5, 0.5);
                     }
                     fireFlamethrower(p, dt);
@@ -2842,8 +2925,14 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (keysRef.current['MouseLeft']) {
                 // [修复] 添加状态检查
                 if (p.stunTimer <= 0 && (p.petrifyTimer || 0) <= 0 && (p.charmTimer || 0) <= 0 && p.sleepTimer <= 0) {
+                    p.magicChargeTimer = (p.magicChargeTimer || 0) + dt;
                     handleMagicCurse(p, worldMouse);
+                } else {
+                    p.magicChargeTimer = Math.max(0, (p.magicChargeTimer || 0) - dt * 2);
                 }
+            } else {
+                // Decay charge when not firing
+                p.magicChargeTimer = Math.max(0, (p.magicChargeTimer || 0) - dt * 2);
             }
             if (keysRef.current['MouseRight']) {
                 handleMagicProtection(p);
@@ -2924,6 +3013,24 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             ai.aiSkipSkills = false;
         }
 
+        // [新增] AI 移动变数更新 / AI Movement Variance Update
+        if (ai.aiStrafeTimer === undefined) ai.aiStrafeTimer = 0;
+        if (ai.aiChangeDistTimer === undefined) ai.aiChangeDistTimer = 0;
+
+        ai.aiStrafeTimer -= dt;
+        ai.aiChangeDistTimer -= dt;
+
+        if (ai.aiStrafeTimer <= 0) {
+            ai.aiStrafeDir = Math.random() < 0.5 ? 1 : -1;
+            ai.aiStrafeTimer = 0.5 + Math.random() * 2.5; // Change strafe every 0.5-3s
+        }
+
+        if (ai.aiChangeDistTimer <= 0) {
+            // New preferred distance offset
+            ai.aiPreferredDistOffset = (Math.random() - 0.5) * 120; // +/- 60 variance
+            ai.aiChangeDistTimer = 2.0 + Math.random() * 4.0; // Change preference every 2-6s
+        }
+
         // 1. 自动寻找最近的敌人
         let target = getNearestEnemy(ai);
 
@@ -2954,6 +3061,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // A. 扫描地面警告 (如猫猫球大招)
         stateRef.current.groundEffects.forEach(eff => {
+            // [New] AI treats its own effects as safe
+            if (eff.ownerId === ai.id) return;
+
             if (eff.type === 'SCOOPER_WARNING') {
                 dangerZones.push({
                     type: 'CIRCLE',
@@ -3118,12 +3228,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // [已移至上方] 恐惧状态已在优先级逻辑中处理
 
-        // 教练球 AI (保持不变)
+        // 教练球 AI
         if (ai.type === CharacterType.COACH) {
-            if (Math.random() < 0.02) {
-                ai.aimAngle = Math.random() * Math.PI * 2;
-                ai.angle = ai.aimAngle;
-            }
             const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[CharacterType.COACH].speed;
 
             // [修复] 教练球被禁锢(Root)时无法移动
@@ -3132,16 +3238,38 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 return;
             }
 
+            // 1. 随机游荡 (Wander)
+            // 每帧一定概率改变方向 (1.5% chance per frame)
+            if (Math.random() < 0.015) {
+                ai.aimAngle = Math.random() * Math.PI * 2;
+                ai.angle = ai.aimAngle;
+            }
 
-            // 保持在中心区域活动
-            const distToCenter = Utils.dist(ai.pos, { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 });
-            if (distToCenter > 500) {
-                const toCenter = Utils.normalize(Utils.sub({ x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 }, ai.pos));
+            // 2. 边缘检测与中心回归 (Edge Avoidance)
+            const edgeThreshold = 300; // 距离边缘多少像素开始回归
+            const w = MAP_SIZE.width;
+            const h = MAP_SIZE.height;
+            const cx = w / 2;
+            const cy = h / 2;
+
+            const isNearEdge = ai.pos.x < edgeThreshold ||
+                ai.pos.x > w - edgeThreshold ||
+                ai.pos.y < edgeThreshold ||
+                ai.pos.y > h - edgeThreshold;
+
+            if (isNearEdge) {
+                // 强制向中心移动
+                const toCenter = Utils.normalize(Utils.sub({ x: cx, y: cy }, ai.pos));
+                // 施加向心的速度
                 ai.vel = Utils.add(ai.vel, Utils.mult(toCenter, accel * dt * 60));
+                // 更新朝向以面对中心
                 ai.angle = Math.atan2(toCenter.y, toCenter.x);
+                ai.aimAngle = ai.angle;
             } else {
+                // 正常游荡移动 (沿当前角度前进)
                 ai.vel = Utils.add(ai.vel, Utils.mult({ x: Math.cos(ai.angle), y: Math.sin(ai.angle) }, accel * dt * 60));
             }
+
             return;
         }
 
@@ -3346,17 +3474,24 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
 
             // Movement adjustment (Strafe/Kiting)
+            // Movement adjustment (Strafe/Kiting)
             if (!evasionDir && target) {
                 const range = CHAR_STATS[CharacterType.PYRO].flamethrowerRange;
-                const idealRange = range * 0.9;
+                const idealRange = (range * 0.9) + (ai.aiPreferredDistOffset || 0);
 
-                if (distToTarget > idealRange) {
+                if (distToTarget > idealRange + 20) {
                     finalMoveDir = Utils.normalize(moveDir);
                 } else {
                     const perp = { x: -moveDir.y, y: moveDir.x };
-                    const strafeDir = Utils.normalize(perp);
-                    const strafeFactor = Math.sin(Date.now() / 800);
-                    finalMoveDir = Utils.add(Utils.mult(Utils.normalize(moveDir), 0.1), Utils.mult(strafeDir, strafeFactor));
+                    // Use stored Strafe Direction
+                    let strafe = Utils.mult(Utils.normalize(perp), (ai.aiStrafeDir || 1));
+
+                    // Mix in some forward/backward to avoid perfect orbit
+                    const error = (distToTarget - idealRange) / 100; // -1 to 1 approx
+                    const approach = Utils.clamp(error, -0.5, 0.5);
+
+                    finalMoveDir = Utils.add(Utils.mult(Utils.normalize(moveDir), approach), Utils.mult(strafe, 0.8));
+                    finalMoveDir = Utils.normalize(finalMoveDir);
                 }
             }
 
@@ -3374,7 +3509,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (shouldFire && target) {
                 ai.isFiringFlamethrower = true;
                 ai.fuel -= CHAR_STATS.PYRO.fuelConsumption * dt;
-                if (ai.fuel <= 0) { ai.fuel = 0; ai.isBurnedOut = true; ai.burstTimer = 0; Sound.playOverheat(); spawnParticles(ai.pos, 15, '#ffffff', 5, 0.5); }
+                if (ai.fuel <= 0) { ai.fuel = 0; ai.isBurnedOut = true; ai.burstTimer = 0; Sound.playBurnout(); spawnParticles(ai.pos, 15, '#ffffff', 5, 0.5); }
                 fireFlamethrower(ai, dt);
             } else {
                 ai.isFiringFlamethrower = false;
@@ -3436,14 +3571,18 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             ai.aimAngle += Utils.clamp(d, -CHAR_STATS.TANK.turretSpeed * dt * 60, CHAR_STATS.TANK.turretSpeed * dt * 60);
 
             if (target && !evasionDir) {
-                const optimalRange = ai.tankMode === TankMode.ARTILLERY ? 500 : 300;
+                let optimalRange = ai.tankMode === TankMode.ARTILLERY ? 500 : 300;
+                optimalRange += (ai.aiPreferredDistOffset || 0);
+
                 if (distToTarget < optimalRange - 50) {
                     finalMoveDir = Utils.mult(Utils.normalize(moveDir), -1);
                 } else if (distToTarget > optimalRange + 50) {
                     finalMoveDir = Utils.normalize(moveDir);
                 } else {
                     const perp = { x: -moveDir.y, y: moveDir.x };
-                    finalMoveDir = Utils.mult(Utils.normalize(perp), Math.sin(Date.now() / 2000) * 0.5);
+                    const strafe = Utils.mult(Utils.normalize(perp), (ai.aiStrafeDir || 1) * 0.6);
+                    // Add slight random noise to vector to prevent locked path
+                    finalMoveDir = strafe;
                 }
             }
 
@@ -3473,25 +3612,26 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const stats = CHAR_STATS[CharacterType.MAGIC];
 
             // 瞄准
-            if (target) {
+            if (target && (ai.aimLockTimer || 0) <= 0) {
                 ai.aimAngle = Math.atan2(target.pos.y - ai.pos.y, target.pos.x - ai.pos.x);
             }
             ai.angle = ai.aimAngle;
 
             if (target) {
                 // 移动策略：保持中距离
-                const optimalRange = 250;
+                const optimalRange = 250 + (ai.aiPreferredDistOffset || 0);
                 if (!evasionDir) {
                     if (distToTarget < optimalRange - 50) {
-                        // 太近了，后退
+                        // too close
                         finalMoveDir = Utils.mult(Utils.normalize(moveDir), -1);
                     } else if (distToTarget > optimalRange + 100) {
-                        // 太远了，接近
+                        // too far
                         finalMoveDir = Utils.normalize(moveDir);
                     } else {
-                        // 侧移走位
+                        // Strafe
                         const perp = { x: -moveDir.y, y: moveDir.x };
-                        finalMoveDir = Utils.mult(Utils.normalize(perp), Math.sin(Date.now() / 1500) * 0.6);
+                        const strafe = Utils.mult(Utils.normalize(perp), (ai.aiStrafeDir || 1) * 0.7);
+                        finalMoveDir = strafe;
                     }
                 }
 
@@ -3720,7 +3860,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (Math.random() < 0.2) spawnParticles(e.pos, 1, '#ef4444', 2, 0.5);
                     } else {
                         e.flameExposure = Math.min(100, e.flameExposure + 2);
-                        e.burnTimer = 3.0;
+                        if (e.burnTimer <= 0) {
+                            applyStatus(e, 'burn', 3.0, p.id);
+                        } else {
+                            e.burnTimer = 3.0; // Refresh timer silently
+                        }
                         const baseDmg = 95;
                         const rampMult = 1 + (e.flameExposure / 35);
                         // 火焰球内战伤害倍率
@@ -3942,8 +4086,25 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     for (const obs of state.obstacles) {
                         if (obs.type === 'WATER') continue;
                         if (Utils.checkCircleRectCollision(p.pos, p.radius, obs).collided) {
+
+                            // [New] Magic Spell Wall Penetration
+                            if (p.spawnedInsideWall) {
+                                continue;
+                            }
+
                             hitWall = true;
                             break;
+                        }
+                    }
+
+                    // [New] Logic to clear spawnedInsideWall flag
+                    if (p.spawnedInsideWall) {
+                        const stillInside = state.obstacles.some(obs =>
+                            obs.type !== 'WATER' &&
+                            Utils.checkCircleRectCollision(p.pos, p.radius, obs).collided
+                        );
+                        if (!stillInside) {
+                            p.spawnedInsideWall = false;
                         }
                     }
                 }
@@ -3957,14 +4118,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         // 判定：非自己，未死亡
                         if (pl.id !== p.ownerId && !pl.isDead) {
                             if (Utils.dist(p.pos, pl.pos) < pl.radius + p.radius) {
-                                // 悟空特殊状态免疫
-                                let immune = false;
-                                if (pl.type === CharacterType.WUKONG && pl.wukongChargeState === 'SMASH') immune = true;
-
-                                if (!immune) {
-                                    hitEntity = pl;
-                                    break;
-                                }
+                                hitEntity = pl;
+                                break;
                             }
                         }
                     }
@@ -4009,33 +4164,81 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     } else {
                         // 命中玩家
                         if (p.projectileType === 'MAGIC_SPELL') {
-                            // 魔法球咒语 - 施加随机负面状态
-                            // [Modified] Dynamically pick from ALL negative statuses (excluding disarm/wet)
-                            // 1. Get all negative keys
-                            const allDebuffs = Object.keys(STATUS_CONFIG).filter(k =>
-                                !STATUS_CONFIG[k].isPositive &&
-                                k !== 'disarm' &&
-                                k !== 'wet'
-                            );
+                            // 1. Determine Status to Apply
+                            let statusToApply = p.statusType;
 
-                            // Mechanical Immunities: handled by applyStatus internally? 
-                            // Actually applyStatus handles the *application* check, 
-                            // but we want to avoid picking an immune status if possible to not waste the hit.
+                            if (!statusToApply) {
+                                // Fallback: Pick random if not pre-set
+                                const allDebuffs = Object.keys(STATUS_CONFIG).filter(k =>
+                                    !STATUS_CONFIG[k].isPositive &&
+                                    k !== 'disarm' &&
+                                    k !== 'wet'
+                                );
+                                statusToApply = allDebuffs[Math.floor(Math.random() * allDebuffs.length)];
+                            }
 
-                            let pool = allDebuffs;
+                            // 2. Mechanical Immunity Check (Unified)
                             if (isMechanical(hitEntity)) {
-                                // Tank/Drone/Turret immunities
                                 const immune = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
-                                pool = allDebuffs.filter(t => !immune.includes(t));
+                                if (immune.includes(statusToApply)) {
+                                    statusToApply = undefined; // Immune
+                                    hitEntity.statusLabel = "无效!";
+                                    spawnParticles(hitEntity.pos, 5, '#9ca3af', 2);
+                                }
                             }
 
-                            if (pool.length > 0) {
-                                const type = pool[Math.floor(Math.random() * pool.length)];
-                                const duration = 0.5 + Math.random() * 2.5; // 0.5 - 3.0 seconds
-                                applyStatus(hitEntity, type, duration, p.ownerId);
+                            // 3. Apply Status & Visuals
+                            if (statusToApply) {
+                                const duration = 0.5 + Math.random() * 2.5;
+                                applyStatus(hitEntity, statusToApply, duration, p.ownerId);
+
+                                // [New] Show floating text on Caster when hit confirms
+                                const owner = state.players.find(pl => pl.id === p.ownerId);
+                                if (owner && MAGIC_SPELL_LINES[statusToApply]) {
+                                    owner.statusLabel = MAGIC_SPELL_LINES[statusToApply] + '!';
+                                    owner.statusLabelColor = p.color; // Use projectile color which matches form
+                                }
                             }
-                            spawnParticles(p.pos, 8, p.color, 4);
-                            Sound.playHit();
+                            spawnParticles(p.pos, 15, p.color, 6);
+
+                            // Magical burst particles
+                            stateRef.current.particles.push({
+                                id: Math.random().toString(),
+                                pos: { ...p.pos },
+                                vel: { x: 0, y: 0 },
+                                life: 0.2, maxLife: 0.2,
+                                color: 'rgba(255, 255, 255, 0.8)',
+                                size: 15 // Flash
+                            });
+                            Sound.playHit('MAGIC');
+                        } else if (p.projectileType === 'EXPELLIARMUS') {
+                            // Expelliarmus logic
+                            const owner = state.players.find(pl => pl.id === p.ownerId);
+                            const stats = CHAR_STATS[CharacterType.MAGIC];
+
+                            if (!isMechanical(hitEntity)) {
+                                applyStatus(hitEntity, 'disarm', stats.expelliarmusDuration / 1000, p.ownerId);
+                                hitEntity.statusLabel = "缴械!";
+                            } else {
+                                hitEntity.statusLabel = "无效!";
+                            }
+
+                            spawnParticles(hitEntity.pos, 15, p.color, 6);
+
+                            // Visuals
+                            stateRef.current.particles.push({
+                                id: Math.random().toString(),
+                                pos: { ...p.pos },
+                                vel: { x: 0, y: 0 },
+                                life: 0.2, maxLife: 0.2,
+                                color: 'rgba(255, 255, 255, 0.8)',
+                                size: 15
+                            });
+                            Sound.playHit('MAGIC'); // Use existing magic hit sound
+
+                            if (owner) {
+                                owner.statusLabel = MAGIC_SPELL_LINES.disarm + '!';
+                            }
                         } else {
                             // 普通投射物 - 造成伤害
                             takeDamage(hitEntity, p.damage);
@@ -4105,8 +4308,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     const baseForce = 10400;
                     const force = baseForce * damageFactor;
 
-                    target.slowTimer = 2.4;
                     applyKnockback(target, pushDir, force);
+                    applyStatus(target, 'slow', 2.4, ownerId);
                 }
             }
         });
@@ -4136,6 +4339,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if ((p.magicShieldTimer || 0) > 0) p.magicShieldTimer! -= dt;
         if ((p.lightSpiritTimer || 0) > 0) p.lightSpiritTimer! -= dt;
         if ((p.ccImmuneTimer || 0) > 0) p.ccImmuneTimer! -= dt;
+        if ((p.forcedMoveTimer || 0) > 0) p.forcedMoveTimer! -= dt;
+        if ((p.aimLockTimer || 0) > 0) p.aimLockTimer! -= dt;
 
         // [修复] 嘲讽结束时重置按键状态，防止普攻卡死
         if (p.tauntTimer <= 0 && (p as any)._wasTaunted) {
@@ -4196,28 +4401,29 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (p.wukongComboTimer <= 0) p.wukongComboStep = 0;
         }
 
-        // If wet and moving slow/stopped, take drowning damage
+        // If wet, take drowning damage
         if (p.isWet) {
+            // 1. 火焰球特殊机制：一旦进入潮湿状态，受双倍溺水伤害，持续产生蒸汽 (不要求停止移动)
             if (p.type === CharacterType.PYRO) {
-                takeDamage(p, 200 * dt); // 快速持续伤害 (约为普通溺水的4倍)
+                takeDamage(p, 200 * dt); // 四倍持续伤害 (100 HP/s)
                 // 蒸汽特效 (Steam)
-                if (Math.random() < 0.3) {
+                if (Math.random() < 0.4) {
                     stateRef.current.particles.push({
                         id: Math.random().toString(),
                         pos: Utils.add(p.pos, { x: (Math.random() - 0.5) * 20, y: (Math.random() - 0.5) * 20 }),
-                        vel: { x: (Math.random() - 0.5), y: -2 - Math.random() }, // 向上飘
-                        life: 0.5 + Math.random() * 0.3,
-                        maxLife: 0.8,
-                        color: 'rgba(226, 232, 240, 0.6)', // 半透明白蒸汽
-                        size: 5 + Math.random() * 4,
-                        drag: 0.9
+                        vel: { x: (Math.random() - 0.5) * 1, y: -2 - Math.random() * 2 }, // 向上飘
+                        life: 0.6 + Math.random() * 0.4,
+                        maxLife: 1.0,
+                        color: 'rgba(226, 232, 240, 0.7)', // 半透明白蒸汽
+                        size: 6 + Math.random() * 6,
+                        drag: 0.92
                     });
                 }
             }
-            // 其他角色：只有在水中静止/缓慢移动时才会溺水
+            // 2. 其他角色：保持原有的“只有在水中静止/缓慢移动时才会溺水”机制
             else if (Utils.mag(p.vel) < 0.8) {
                 // Sinking / Drowning
-                takeDamage(p, 50 * dt);
+                takeDamage(p, 50 * dt); // 标准持续伤害 (50 HP/s)
                 if (Math.random() < 0.2) {
                     stateRef.current.particles.push({
                         id: Math.random().toString(),
@@ -4299,7 +4505,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     p.lmgAmmo = p.maxLmgAmmo;
                     p.isReloadingLmg = false;
                     p.lmgReloadTimer = 0;
-                    if (p.type === CharacterType.TANK && p.id === 'player') Sound.playSkill('RELOAD');
+                    if (p.id === 'player') Sound.playSkill('RELOAD');
                 }
             }
 
@@ -4433,8 +4639,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (p.id === g.ownerId) {
                             if (p.hp < p.maxHp) p.hp += 50 * dt;
                         } else {
+                            // 1. 造成持续伤害 (之前误删，补回)
                             takeDamage(p, 50 * dt, CharacterType.PYRO, DamageType.FIRE);
-                            p.burnTimer = 3.0;
+
+                            // 2. 施加状态 (直接调用 applyStatus，视觉频率由全局 CD 管理)
+                            applyStatus(p, 'burn', 3.0, g.ownerId);
+                            applyStatus(p, 'slow', 3.0, g.ownerId);
+
                             p.vel = Utils.mult(p.vel, 0.90);
                         }
                     }
@@ -4725,7 +4936,24 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             for (let y = 0; y <= MAP_SIZE.height; y += 100) { ctx.moveTo(0, y); ctx.lineTo(MAP_SIZE.width, y); }
             ctx.stroke();
 
-            // Ground Effects
+            // Obstacles
+            state.obstacles.forEach(obs => {
+                if (obs.type === 'WATER') {
+                    ctx.fillStyle = 'rgba(6, 182, 212, 0.3)';
+                    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+                    ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+                } else {
+                    ctx.fillStyle = TERRAIN_CONFIG.WALL_COLOR;
+                    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+                    ctx.strokeStyle = TERRAIN_CONFIG.WALL_BORDER_COLOR;
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+                }
+            });
+
+            // Ground Effects (High Priority Ground: above obstacles, below players/projectiles)
             state.groundEffects.forEach(g => {
                 if (g.type === 'MAGMA_POOL') {
                     ctx.fillStyle = 'rgba(127, 29, 29, 0.5)';
@@ -4760,27 +4988,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.fill();
 
                     ctx.restore();
-                }
-
-
-                // SCOOPER_SMASH moved to high-priority render layer
-
-            });
-
-            // Obstacles
-            state.obstacles.forEach(obs => {
-                if (obs.type === 'WATER') {
-                    ctx.fillStyle = 'rgba(6, 182, 212, 0.3)';
-                    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
-                    ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
-                    ctx.lineWidth = 2;
-                    ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
-                } else {
-                    ctx.fillStyle = '#475569';
-                    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
-                    ctx.strokeStyle = '#94a3b8';
-                    ctx.lineWidth = 1;
-                    ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
                 }
             });
 
@@ -4915,10 +5122,64 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             // Projectiles
             state.projectiles.forEach(p => {
-                ctx.fillStyle = p.color;
-                ctx.beginPath();
-                ctx.arc(p.pos.x, p.pos.y, p.radius, 0, Math.PI * 2);
-                ctx.fill();
+                if (p.projectileType === 'MAGIC_SPELL' || p.projectileType === 'EXPELLIARMUS') {
+                    // 魔法球专用渲染 - 流星特效
+                    const angle = Math.atan2(p.vel.y, p.vel.x);
+                    const speed = Utils.mag(p.vel);
+                    const trailLength = Math.min(100, speed * 8); // Speed-based trail
+
+                    ctx.save();
+                    ctx.translate(p.pos.x, p.pos.y);
+                    ctx.rotate(angle);
+
+                    // 1. Trail (Tail)
+                    const gradient = ctx.createLinearGradient(0, 0, -trailLength, 0);
+                    gradient.addColorStop(0, p.color); // Head color
+                    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)'); // Transparent tail
+
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    // Teardrop shape / elongated triangle
+                    ctx.moveTo(8, 0);
+                    ctx.lineTo(-trailLength, -3); // Tapered tail top
+                    ctx.lineTo(-trailLength, 3);  // Tapered tail bottom
+                    ctx.closePath();
+                    ctx.fill();
+
+                    // 2. Glowing Head (Meteor Core)
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = p.color;
+                    ctx.fillStyle = p.color;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 3, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 3. Side Sparkles (Random jitter)
+                    if (Math.random() < 0.3) {
+                        ctx.fillStyle = p.color;
+                        const sparkX = -Math.random() * trailLength * 0.5;
+                        const sparkY = (Math.random() - 0.5) * 10;
+                        ctx.fillRect(sparkX, sparkY, 2, 2);
+                    }
+
+                    ctx.restore();
+
+                } else if (p.projectileType === 'DRONE_SHOT') {
+                    // Drone Shot (Small laser)
+                    const angle = Math.atan2(p.vel.y, p.vel.x);
+                    ctx.save();
+                    ctx.translate(p.pos.x, p.pos.y);
+                    ctx.rotate(angle);
+                    ctx.fillStyle = p.color;
+                    ctx.fillRect(-10, -2, 20, 4); // Elongated
+                    ctx.restore();
+                } else {
+                    // Standard Projectile (Circle)
+                    ctx.fillStyle = p.color;
+                    ctx.beginPath();
+                    ctx.arc(p.pos.x, p.pos.y, p.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             });
 
             // [修改核心] 遍历所有玩家进行绘制
@@ -5851,7 +6112,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     const currentChargeTime = p.catIsCharging ? (performance.now() - (p.catChargeStartTime || 0)) / 1000 : 0;
 
                     // Pounce Arrow (Enhanced)
-                    if (p.catIsCharging && currentChargeTime > 0.15) {
+                    if (p.catIsCharging && currentChargeTime > CHAR_STATS[CharacterType.CAT].pounceChargeThreshold) {
                         const rawPct = Math.min(1, currentChargeTime / CHAR_STATS[CharacterType.CAT].pounceMaxCharge);
                         // Ease-out curve: 快速增长后平滑到达最大值
                         const chargePct = 1 - Math.pow(1 - rawPct, 2.5);
@@ -6194,6 +6455,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     // Magic UI Update
                     pMp: uiTarget.mp || 0,
                     pMaxMp: uiTarget.maxMp || 200,
+                    pMagicForm: uiTarget.magicForm || 'WHITE',
 
                     // 敌人状态基于显示对象(可能是缓存的)
                     eCatLives: (displayEnemy && displayEnemy.type === CharacterType.CAT) ? (displayEnemy.lives || 0) : 0,
@@ -6270,7 +6532,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             default: return '切换形态';
         }
     };
-    const getDefeatText = (type: CharacterType) => type === CharacterType.PYRO ? '火焰熄灭' : (type === CharacterType.WUKONG ? '修行不足' : (type === CharacterType.CAT ? '猫猫去睡觉了!' : '机体严重损毁'));
+    const getDefeatText = (type: CharacterType) => {
+        if (type === CharacterType.PYRO) return '火焰熄灭';
+        if (type === CharacterType.TANK) return '机体严重损毁';
+        if (type === CharacterType.WUKONG) return '修行不足';
+        if (type === CharacterType.CAT) return '猫猫去睡觉了!';
+        if (type === CharacterType.MAGIC) {
+            return uiState.pMagicForm === 'BLACK' ? '“这不是终点。”' : '法力耗尽';
+        }
+        return '对局结束';
+    };
 
     // UI rendering helper for skill icon
     const getSkillIcon = (type: CharacterType) => {
@@ -6660,6 +6931,36 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     </div>
                 )}
             </div>
+
+            {/* Exit Confirmation Dialog */}
+            {showExitDialog && uiState.gameStatus === 'PLAYING' && (
+                <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center z-50 backdrop-blur-sm">
+                    <div className="bg-slate-900 border border-slate-700 p-6 rounded-lg shadow-2xl flex flex-col items-center gap-6 min-w-[320px] animate-in fade-in zoom-in duration-200">
+                        <h3 className="text-xl font-bold text-white tracking-wider">确定要结束战斗吗？</h3>
+
+                        <div className="flex gap-4 w-full justify-center">
+                            <button
+                                onClick={() => {
+                                    Sound.playUI('CLICK');
+                                    setShowExitDialog(false);
+                                }}
+                                className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded transition-colors font-medium border border-slate-600"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={() => {
+                                    Sound.playUI('CLICK');
+                                    onExit();
+                                }}
+                                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded transition-colors font-medium border border-red-500 shadow-lg shadow-red-900/20"
+                            >
+                                确定
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* End Screen */}
             {uiState.gameStatus !== 'PLAYING' && (

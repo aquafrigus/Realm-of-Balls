@@ -82,7 +82,7 @@ class SoundManager {
         noise.start();
     }
 
-    playShot(type: 'PYRO' | 'ARTILLERY' | 'LMG' | 'SWING' | 'SCRATCH') {
+    playShot(type: 'PYRO' | 'ARTILLERY' | 'LMG' | 'SWING' | 'SCRATCH' | 'MAGIC') {
         this.init();
         if (!this.ctx) return;
 
@@ -96,13 +96,18 @@ class SoundManager {
             this.createOsc('sawtooth', 300, 0.08, 0.1, 100);
             this.createNoise(0.05, 0.1, 2000);
         } else if (type === 'SWING') {
-            // Whoosh sound for Wukong
             this.createNoise(0.1, 0.2, 1000);
             this.createOsc('sine', 300, 0.1, 0.2, 100);
         } else if (type === 'SCRATCH') {
-            // Short scratch sound: Highpass noise + fast pitch drop
             this.createNoise(0.08, 0.3, 1500);
             this.createOsc('sawtooth', 600, 0.08, 0.15, 200);
+        } else if (type === 'MAGIC') {
+            // [Updated] "咻～" 魔法飞弹音效
+            // 1. "Whistle" - 正弦波快速下滑，模拟物体高速划破空气
+            this.createOsc('sine', 1000, 0.15, 0.15, 100);
+
+            // 2. "Air" - 高通噪音，增加“风声”质感
+            this.createNoise(0.15, 0.1, 2000, 'highpass');
         }
     }
 
@@ -113,10 +118,28 @@ class SoundManager {
         this.createNoise(0.8, 0.6, 400);
     }
 
-    playHit() {
+    // [Updated] 增加 type 参数以支持不同命中音效
+    playHit(type?: 'MAGIC' | 'DEFAULT') {
         this.init();
         if (!this.ctx) return;
-        this.createOsc('triangle', 600, 0.05, 0.1);
+
+        if (type === 'MAGIC') {
+            // [Updated] 魔法命中音效：哈利波特式的“噼里啪啦”电流感
+
+            // 1. "Crack" - 极短、高音量的锯齿波，从极高频瞬间掉落
+            // 这模拟了闪电劈中或鞭子抽打的声音
+            this.createOsc('sawtooth', 2000, 0.08, 0.3, 100);
+
+            // 2. "Fizz" - 高通噪音，模拟电火花炸裂
+            // 使用 highpass 过滤掉低频，只保留“嘶嘶”声
+            this.createNoise(0.1, 0.25, 3000, 'highpass');
+
+            // 3. "Snap" - 补充一个极短的方波冲击
+            this.createOsc('square', 500, 0.05, 0.2, 50);
+        } else {
+            // 默认物理撞击音效 (保留原样或微调)
+            this.createOsc('triangle', 600, 0.05, 0.1, 100); // 稍微加点滑音让撞击更自然
+        }
     }
 
     playSkill(type: 'MAGMA_THROW' | 'MAGMA_LAND' | 'MAGMA_EXPLODE' | 'SWITCH' | 'RELOAD' | 'CHARGE_START' | 'SMASH_HIT' | 'THRUST' | 'SCOOPER_WARNING') {
@@ -155,13 +178,13 @@ class SoundManager {
         }
     }
 
-    playOverheat() {
+    playBurnout() {
         this.init();
         if (!this.ctx) return;
         this.createOsc('square', 800, 0.2, 0.1, 400);
     }
 
-    playUI(type: 'CLICK' | 'START' | 'VICTORY' | 'DEFEAT' | 'ERROR') {
+    playUI(type: 'CLICK' | 'START' | 'VICTORY' | 'DEFEAT' | 'ERROR' | 'HOVER') {
         this.init();
         if (!this.ctx) return;
 
@@ -199,6 +222,9 @@ class SoundManager {
             // 短促的错误提示音：两个降调的音符
             this.createOsc('square', 300, 0.1, 0.15, 200);
             setTimeout(() => this.createOsc('square', 200, 0.15, 0.15, 100), 100);
+        } else if (type === 'HOVER') {
+            // 轻微的悬停音效
+            this.createOsc('sine', 800, 0.03, 0.05);
         }
     }
 }
