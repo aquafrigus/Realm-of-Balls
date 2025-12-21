@@ -1218,13 +1218,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 y: Utils.clamp(p.pos.y + Math.sin(angle) * blinkRange, 50, MAP_SIZE.height - 50)
             };
 
-            // 检查是否在墙里
-            const inWall = stateRef.current.obstacles.some(obs =>
-                obs.type === 'WALL' &&
+            // 检查是否在墙里或水里 (Avoid WALL and WATER)
+            const isHazard = stateRef.current.obstacles.some(obs =>
+                (obs.type === 'WALL' || obs.type === 'WATER') &&
                 testPos.x > obs.x && testPos.x < obs.x + obs.width &&
                 testPos.y > obs.y && testPos.y < obs.y + obs.height
             );
-            if (inWall) continue;
+            if (isHazard) continue;
 
             // 计算离最近敌人的距离
             let minDistToEnemy = Infinity;
@@ -5315,19 +5315,40 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.rotate(p.aimAngle + swayOffset);
 
                     const wandLen = 32;
-                    const wandWidth = 6;
+                    // Wand Stick (Branch-like)
+                    ctx.strokeStyle = '#4b3621'; // Dark wood brown
+                    ctx.lineWidth = 4;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
 
-                    // Wand Stick
-                    // Use a darker handle
-                    ctx.fillStyle = '#475569'; // Dark handle
-                    ctx.fillRect(p.radius - 5, -wandWidth / 2, wandLen, wandWidth);
+                    ctx.beginPath();
+                    const startX = p.radius - 5;
+                    ctx.moveTo(startX, 0);
 
-                    // Wand Tip (Glowing)
+                    // First segment (slightly up)
+                    ctx.lineTo(startX + wandLen * 0.3, -3);
+                    // Second segment (slightly down, subtle Z-shape)
+                    ctx.lineTo(startX + wandLen * 0.7, 2);
+                    // Final segment (to tip)
+                    ctx.lineTo(startX + wandLen, -1);
+                    ctx.stroke();
+
+                    // Draw a small knot or sub-branch for "branch" feel
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(startX + wandLen * 0.4, -2);
+                    ctx.lineTo(startX + wandLen * 0.5, -6);
+                    ctx.stroke();
+
+                    // Wand Tip (Glowing Gem/Bud)
                     // Use the exact current theme color if possible, or fallback
                     ctx.fillStyle = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e'; // Match projectile colors
                     ctx.shadowColor = ctx.fillStyle;
-                    ctx.shadowBlur = 10;
-                    ctx.fillRect(p.radius + wandLen - 8, -(wandWidth + 2) / 2, 8, wandWidth + 2);
+                    ctx.shadowBlur = 15;
+                    ctx.beginPath();
+                    ctx.arc(startX + wandLen, -1, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowBlur = 0; // Reset shadow
 
                     // Restore rotation
                     ctx.restore();
@@ -6588,7 +6609,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         Sound.playUI('CLICK');
                         onExit();
                     }}
-                    className="px-4 py-1 bg-red-900/80 hover:bg-red-700 border border-red-500 text-white text-xs font-bold uppercase tracking-widest rounded transition-colors mb-2"
+                    className="px-6 py-2 bg-red-900/80 hover:bg-red-700 border border-red-500 text-white text-sm font-bold uppercase tracking-widest rounded transition-colors mb-2"
                 >
                     结束战斗
                 </button>
