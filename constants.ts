@@ -1,27 +1,31 @@
 import { CharacterType } from "./types";
 
-export const STATUS_CONFIG: Record<string, { label: string; color: string; isPositive: boolean; floatingTextCD?: number }> = {
+export const STATUS_CONFIG: Record<string, { label: string; color: string; nature: string; floatingTextCD?: number }> = {
   // Negative Statuses (Debuffs)
-  stun: { label: '眩晕|拍扁', color: '#fbbf24', isPositive: false, floatingTextCD: 800 },   // Amber-400
-  petrify: { label: '石化', color: '#94a3b8', isPositive: false, floatingTextCD: 800 },    // Slate-400
-  sleep: { label: '催眠', color: '#818cf8', isPositive: false, floatingTextCD: 800 },      // Indigo-400
-  fear: { label: '恐惧', color: '#c084fc', isPositive: false, floatingTextCD: 800 },       // Purple-400
-  charm: { label: '魅惑|被萌翻', color: '#ec4899', isPositive: false, floatingTextCD: 800 },      // Pink-500
-  taunt: { label: '嘲讽', color: '#ef4444', isPositive: false, floatingTextCD: 800 },      // Red-500
-  silence: { label: '沉默', color: '#60a5fa', isPositive: false, floatingTextCD: 800 },    // Blue-400
-  disarm: { label: '缴械|踩', color: '#f87171', isPositive: false, floatingTextCD: 800 },     // Red-400
-  root: { label: '束缚', color: '#22c55e', isPositive: false, floatingTextCD: 800 },       // Green-500
-  blind: { label: '致盲', color: '#10b981', isPositive: false, floatingTextCD: 800 },      // Emerald-500
-  slow: { label: '减速', color: '#3b82f6', isPositive: false, floatingTextCD: 3000 },      // Blue-500
-  burn: { label: '灼烧', color: '#ea580c', isPositive: false, floatingTextCD: 3000 },       // Orange-600
-  wet: { label: '潮湿', color: '#06b6d4', isPositive: false, floatingTextCD: 800 },        // Cyan-500
+  stun: { label: '眩晕|拍扁', color: '#fbbf24', nature: 'negative', floatingTextCD: 800 },   // Amber-400
+  petrify: { label: '石化', color: '#94a3b8', nature: 'negative', floatingTextCD: 800 },    // Slate-400
+  sleep: { label: '催眠', color: '#818cf8', nature: 'negative', floatingTextCD: 800 },      // Indigo-400
+  fear: { label: '恐惧', color: '#c084fc', nature: 'negative', floatingTextCD: 800 },       // Purple-400
+  charm: { label: '魅惑|被萌翻', color: '#ec4899', nature: 'negative', floatingTextCD: 800 },      // Pink-500
+  taunt: { label: '嘲讽', color: '#f43f5e', nature: 'negative', floatingTextCD: 800 },      // Rose-500
+  silence: { label: '沉默', color: '#60a5fa', nature: 'negative', floatingTextCD: 800 },    // Blue-400
+  disarm: { label: '缴械|踩', color: '#f87171', nature: 'negative', floatingTextCD: 800 },     // Red-400
+  root: { label: '束缚', color: '#22c55e', nature: 'negative', floatingTextCD: 800 },       // Green-500
+  blind: { label: '致盲', color: '#10b981', nature: 'negative', floatingTextCD: 800 },      // Emerald-500
+  slow: { label: '减速', color: '#3b82f6', nature: 'negative', floatingTextCD: 3000 },      // Blue-500
+  burn: { label: '灼烧', color: '#ea580c', nature: 'negative', floatingTextCD: 3000 },       // Orange-600
 
   // Positive Statuses (Buffs)
-  invincible: { label: '无敌', color: '#facc15', isPositive: true, floatingTextCD: 1000 }, // Yellow-400
-  stealth: { label: '隐身', color: '#64748b', isPositive: true, floatingTextCD: 1000 },    // Slate-500
-  haste: { label: '加速', color: '#0ea5e9', isPositive: true, floatingTextCD: 1000 },       // Sky-500
-  heal: { label: '治疗', color: '#34d399', isPositive: true, floatingTextCD: 500 },    // Emerald-400
-  revive: { label: '复活|有精神', color: '#22d3ee', isPositive: true, floatingTextCD: 2000 },      // Cyan-400
+  invincible: { label: '无敌', color: '#facc15', nature: 'positive', floatingTextCD: 1000 }, // Yellow-400
+  stealth: { label: '隐身', color: '#64748b', nature: 'positive', floatingTextCD: 1000 },    // Slate-500
+  haste: { label: '加速', color: '#0ea5e9', nature: 'positive', floatingTextCD: 1000 },       // Sky-500
+  heal: { label: '治疗', color: '#34d399', nature: 'positive', floatingTextCD: 500 },    // Emerald-400
+  revive: { label: '复活|有精神', color: '#22d3ee', nature: 'positive', floatingTextCD: 2000 },      // Cyan-400
+
+  // Special Statuses
+  burst: { label: '爆燃', color: '#ef4444', nature: 'special', floatingTextCD: 5000 },    // Red-500
+  wet: { label: '潮湿', color: '#06b6d4', nature: 'special', floatingTextCD: 800 },        // Cyan-500
+
 };
 
 export const MAP_SIZE = { width: 2000, height: 2000 };
@@ -52,6 +56,10 @@ export const CHAR_STATS = {
 
     skillCooldown: 99999,
     secondarySkillCooldown: 99999,
+  },
+  [CharacterType.ENVIRONMENT]: {
+    hp: 0, mass: 0, radius: 0, speed: 0, color: '', uiThemeColor: '',
+    skillCooldown: 0, secondarySkillCooldown: 0
   },
   [CharacterType.PYRO]: {
     hp: 1200, // Buffed from 1000

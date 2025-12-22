@@ -5,6 +5,7 @@ export enum CharacterType {
   CAT = 'CAT',
   COACH = 'COACH',
   MAGIC = 'MAGIC',
+  ENVIRONMENT = 'ENVIRONMENT',
 }
 
 export enum TankMode {
@@ -14,8 +15,9 @@ export enum TankMode {
 
 export enum DamageType {
   PHYSICAL = 'PHYSICAL',
-  FIRE = 'FIRE',
   MAGIC = 'MAGIC',
+  WATER = 'WATER',
+  FIRE = 'FIRE',
 }
 
 export interface Vector2 {
@@ -140,6 +142,7 @@ export interface PlayerState extends GameEntity {
   blindTimer: number;
   tauntTimer: number;
   tauntSourceId?: string; // [新增] 嘲讽来源ID
+  burnSourceId?: string;  // [新增] 灼烧来源ID
   rootTimer: number;
   sleepTimer: number;
   silenceTimer: number;
@@ -274,7 +277,7 @@ export interface Obstacle {
   y: number;
   width: number;
   height: number;
-  type: 'WALL' | 'WATER';
+  type: 'WALL' | 'WATER' | 'LAVA';
   priority?: number;
 }
 

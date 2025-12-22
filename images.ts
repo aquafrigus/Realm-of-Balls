@@ -45,6 +45,10 @@ export interface CharacterImageSet {
 }
 
 export const CHARACTER_IMAGES: Record<CharacterType, CharacterImageSet> = {
+    [CharacterType.ENVIRONMENT]: {
+        avatar: '',
+        skill: ''
+    },
     [CharacterType.PYRO]: {
         avatar: PYRO_AVATAR,
         skill: PYRO_SKILL

@@ -187,6 +187,19 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             });
         }
 
+        // [New] Generate 1 Large Lava Pool (Test)
+        const lavaW = 400 + Math.random() * 200;
+        const lavaH = 400 + Math.random() * 200;
+        obs.push({
+            id: 'lava-large',
+            x: Math.random() * (MAP_SIZE.width - lavaW),
+            y: Math.random() * (MAP_SIZE.height - lavaH),
+            width: lavaW,
+            height: lavaH,
+            type: 'LAVA',
+            priority: 0
+        });
+
         // 3. Random Scatter (Reduced count slightly to accommodate large ones)
         const numRandomWalls = 3 + Math.floor(Math.random() * 3);
         const numRandomWater = 1 + Math.floor(Math.random() * 2);
@@ -226,7 +239,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
         // [新增] 按渲染顺序分配唯一优先级 (索引越大，优先级越高，渲染在越上层)
-        // 同时保留类型权重：WALL 基础 +100，WATER 基础 +0
+        // 同时保留类型权重：WALL 基础 +100，WATER/LAVA 基础 +0
         obs.forEach((o, idx) => {
             const typeWeight = o.type === 'WALL' ? 100 : 0;
             o.priority = typeWeight + idx;
@@ -955,6 +968,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             'stealth': 'stealthTimer',
             'haste': 'hasteTimer',
             'invincible': 'invincibleTimer',
+            'burst': 'burstFlag',
             'wet': 'isWet',
             'heal': 'hp',
             'revive': 'isDead'
@@ -996,7 +1010,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // Apply
         if (propKey) {
-            (target as any)[propKey] = Math.max((target as any)[propKey] || 0, duration);
+            if (typeof (target as any)[propKey] === 'boolean') {
+                (target as any)[propKey] = true;
+            } else {
+                (target as any)[propKey] = Math.max((target as any)[propKey] || 0, duration);
+            }
 
             // [New] Use statusQueue instead of single statusLabel
             if (STATUS_CONFIG[type]) {
@@ -1023,6 +1041,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
         if (type === 'taunt' && sourceId) {
             target.tauntSourceId = sourceId;
+        }
+        if (type === 'burn' && sourceId) {
+            target.burnSourceId = sourceId;
+        }
+
+        // [New] Burst Status Logic
+        if (type === 'burst') {
+            target.flameExposure = 100;
+            target.burstFlag = true;
         }
 
         // [New] Wet Status Logic (Cleansing)
@@ -1334,7 +1361,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         // Hitstun
                         target.vel = { x: 0, y: 0 };
                         applyStatus(target, 'slow', 0.2, p.id);
-                        takeDamage(target, stats.scratchDamage);
+                        takeDamage(target, stats.scratchDamage, CharacterType.CAT, DamageType.PHYSICAL);
                         spawnParticles(target.pos, 8, '#f0abfc', 4);
                     }
                     Sound.playHit();
@@ -1372,7 +1399,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // [Modified] Pick Status Effect at CAST time
         const allDebuffs = Object.keys(STATUS_CONFIG).filter(k =>
-            !STATUS_CONFIG[k].isPositive && k !== 'disarm' && k !== 'wet'
+            STATUS_CONFIG[k].nature === 'negative' && k !== 'disarm'
         );
         const statusType = allDebuffs[Math.floor(Math.random() * allDebuffs.length)];
 
@@ -1443,7 +1470,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 pt.y > obs.y && pt.y < obs.y + obs.height
             );
 
-            // If it's a Wall and MAGIC ball has negative weight, we allow it (Blink through/on walls)
             const wallAffinity = (HAZARD_AFFINITY[p.type] || {}).WALL ?? 0;
             if (isInsideWall && wallAffinity >= 0) return;
 
@@ -1666,7 +1692,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         enemy.hp -= dmg;
                         if (enemy.hp <= 0) killEntity(enemy, p.id);
                     } else {
-                        takeDamage(enemy, dmg);
+                        takeDamage(enemy, dmg, CharacterType.MAGIC, DamageType.MAGIC);
                     }
                     const dir = Utils.normalize(Utils.sub(enemy.pos, p.pos));
                     applyKnockback(enemy, dir, stats.patronusKnockback);
@@ -1727,7 +1753,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     closestHit.hp -= damage;
                     if (closestHit.hp <= 0) killEntity(closestHit, p.id);
                 } else {
-                    takeDamage(closestHit, damage);
+                    takeDamage(closestHit, damage, CharacterType.MAGIC, DamageType.MAGIC);
                 }
                 spawnParticles(closestHit.pos, 25, '#22c55e', 8, 0.6);
                 closestHit.statusLabel = `${Math.round(damage)}!`;
@@ -1981,12 +2007,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
                             applyKnockback(t, dir, 800);
 
-                            t.burstFlag = true;
+                            // 使用统一的 applyStatus 处理爆燃 (视觉+机制)
+                            applyStatus(t, 'burst', 0, p.id);
 
-                            // 附加状态 (灼烧)
+                            // 附加状态 (灼烧 - 仅限非火焰球)
                             if (t.type !== CharacterType.PYRO) {
                                 applyStatus(t, 'burn', 5.0, p.id);
-                                t.flameExposure = 100;
                             }
                         }
                     }
@@ -2062,7 +2088,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (target.hp <= 0) killEntity(target, p.id);
                     } else {
                         // Damage Player
-                        takeDamage(target, damage, CharacterType.WUKONG);
+                        takeDamage(target, damage, CharacterType.WUKONG, DamageType.PHYSICAL);
                         applyKnockback(target, knockbackDir, knockback);
                         spawnParticles(target.pos, 5, stats.color, 4);
                     }
@@ -2113,7 +2139,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                     if (target.hp <= 0) killEntity(target, p.id);
                 } else {
-                    takeDamage(target, damage, CharacterType.WUKONG);
+                    takeDamage(target, damage, CharacterType.WUKONG, DamageType.PHYSICAL);
                     applyKnockback(target, dir, 800 * (1 + chargePct));
                     spawnParticles(target.pos, 12, stats.color, 8);
                     // 右键命中敌人飘字
@@ -2152,7 +2178,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // 4. Terrain Destruction
         stateRef.current.obstacles = stateRef.current.obstacles.filter(obs => {
-            if (obs.type === 'WATER') return true;
+            if (obs.type === 'WATER' || obs.type === 'LAVA') return true;
             const dist = Utils.distToSegment({ x: obs.x + obs.width / 2, y: obs.y + obs.height / 2 }, startPos, endPos);
             const collisionDist = width / 2 + Math.max(obs.width, obs.height) / 2; // Approximate collision
             if (dist < collisionDist) {
@@ -2202,7 +2228,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 hitAnyPlayer = true;
 
                 // [友军伤害] 对所有命中的目标造成伤害
-                takeDamage(target, damage, CharacterType.WUKONG);
+                takeDamage(target, damage, CharacterType.WUKONG, DamageType.PHYSICAL);
 
                 // 大幅增加击退效果 (以玩家为中心向外推)
                 const pushDir = Utils.normalize(Utils.sub(target.pos, p.pos));
@@ -2298,7 +2324,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             finalDmg *= 0.5;
         }
 
-
         // Petrify Damage Reduction (80%)
         if ((p.petrifyTimer || 0) > 0) {
             finalDmg *= 0.2;
@@ -2322,6 +2347,19 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Water Resistance vs Fire
         if (p.isWet && damageType === DamageType.FIRE) {
             finalDmg *= 0.5;
+        }
+
+        // [New] Centralized Fire Damage Modifiers
+        if (damageType === DamageType.FIRE) {
+            // 1. Fire Vulnerability (flameExposure / Combust)
+            const rampMult = 1 + ((p.flameExposure || 0) / 35);
+            finalDmg *= rampMult;
+
+            // 2. Pyro vs Pyro internal damage scale
+            if (p.type === CharacterType.PYRO && sourceType === CharacterType.PYRO) {
+                const pyroMult = CHAR_STATS[CharacterType.PYRO].pyroDamageMultiplier || 1;
+                finalDmg *= pyroMult;
+            }
         }
 
         // Wukong Fire Resistance (30% reduction)
@@ -2543,8 +2581,17 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     if (isForced || p1.isWet) return;
                 }
 
-                // 默认：只有 WALL 和 WATER 会产生物理碰撞 (其他类型忽略)
-                if (obs.type !== 'WALL' && obs.type !== 'WATER') return;
+                // Lava Logic (Copy of Water)
+                if (obs.type === 'LAVA') {
+                    if (p1.type === CharacterType.WUKONG) return;
+
+                    // Allow entering lava if Forced OR already Burning (Sticky)
+                    // (Similar to "Wet" stickiness for water)
+                    if (isForced || (p1.burnTimer > 0)) return;
+                }
+
+                // 默认：只有 WALL, WATER, LAVA 会产生物理碰撞 (其他类型忽略)
+                if (obs.type !== 'WALL' && obs.type !== 'WATER' && obs.type !== 'LAVA') return;
 
                 // Cat 特性：飞扑无视地形
                 if (p1.type === CharacterType.CAT && p1.isPouncing) return;
@@ -2568,7 +2615,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 activeCollisions.forEach(({ obs, col, priority }) => {
                     // [Fix] Always process WATER collisions to prevent walking on water
                     // even if touching a higher priority WALL
-                    if (priority < maxPriority && obs.type !== 'WATER') return;
+                    if (priority < maxPriority && obs.type !== 'WATER' && obs.type !== 'LAVA') return;
 
                     if (p1.type === CharacterType.WUKONG && obs.type === 'WALL') {
                         // 悟空翻墙逻辑
@@ -2597,7 +2644,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (obs.type === 'WALL' && (p1.wukongUltKnockbackCharge || 0) >= 0.8) {
                             const bonusDmg = (p1.wukongUltSourceDamage || 0) * 0.2;
                             if (bonusDmg > 0) {
-                                takeDamage(p1, bonusDmg, CharacterType.WUKONG);
+                                takeDamage(p1, bonusDmg, CharacterType.WUKONG, DamageType.PHYSICAL);
                                 Sound.playHit(); // Or a heavy impact sound
                                 spawnParticles(p1.pos, 20, TERRAIN_CONFIG.WALL_DEBRIS_COLOR, 8, 1);
                             }
@@ -2645,6 +2692,27 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 applyStatus(p1, 'wet', 0);
             }
 
+            // [New] Lava Terrain Logic
+            const isCenterInLava = topTerrain?.type === 'LAVA';
+            const isTouchingLava = state.obstacles.some(obs =>
+                obs.type === 'LAVA' && Utils.checkCircleRectCollision(p1.pos, p1.radius, obs).collided
+            );
+
+            const wasBurning = p1.burnTimer > 0;
+            // Sticky logic for Lava:
+            // 1. Center in Lava
+            // 2. Already Burning AND Touching (Sticky)
+            // 3. Forced AND Touching (Entry)
+            const shouldBeInLava = isCenterInLava || (wasBurning && isTouchingLava) || (isForced && isTouchingLava);
+
+            if (shouldBeInLava && !p1.isPouncing) {
+                // 1. Apply Burn (Continuous refresh)
+                applyStatus(p1, 'burn', 0.5, 'LAVA');
+
+                // 2. Apply Burst (Combined visuals/mechanics)
+                applyStatus(p1, 'burst', 0, 'LAVA');
+            }
+
             // 玩家间碰撞 (Player vs Player) - 双重循环
             for (let j = i + 1; j < state.players.length; j++) {
                 const p2 = state.players[j];
@@ -2689,8 +2757,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     const relativeVel = Math.abs(v1n - v2n);
                     if (relativeVel > 8 && p1.teamId !== p2.teamId) {
                         const baseDmg = Math.floor(relativeVel * 2);
-                        takeDamage(p1, baseDmg);
-                        takeDamage(p2, baseDmg);
+                        takeDamage(p1, baseDmg, p2.type, DamageType.PHYSICAL);
+                        takeDamage(p2, baseDmg, p1.type, DamageType.PHYSICAL);
                         Sound.playHit();
                         spawnParticles(Utils.add(p1.pos, Utils.mult(normal, -p1.radius)), 10, '#ffffff');
                     }
@@ -2718,7 +2786,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                         // 蓄力打断由 applyStatus('silence') 自动触发 interruptAction
                         const dmg = CHAR_STATS[CharacterType.CAT].scratchDamage;
-                        takeDamage(target, dmg, CharacterType.CAT);
+                        takeDamage(target, dmg, CharacterType.CAT, DamageType.PHYSICAL);
                         spawnParticles(target.pos, 15, '#f0abfc', 6);
                         Sound.playShot('SCRATCH');
                         cat.hasPounceHit = true;
@@ -2821,12 +2889,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 p.statusQueue = []; // 清空队列
             }
-            //    B. 瞬时事件标记
-            if (p.burstFlag) {
-                spawn("爆燃!", '#ef4444', -3.0); // 红色大字
-                p.burstFlag = false; // 消费掉
-            }
-            //    C. 状态变化检测
+            //    B. 状态变化检测
             // 1. 基础物理/元素 (使用 CONFIG 配置)
             if (!prev.isBurnedOut && p.isBurnedOut) spawn("燃尽!", '#ef4444');
 
@@ -4066,12 +4129,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             e.burnTimer = 3.0; // Refresh timer silently
                         }
                         const baseDmg = 95;
-                        const rampMult = 1 + (e.flameExposure / 35);
-                        // 火焰球内战伤害倍率
-                        const pyroMult = e.type === CharacterType.PYRO
-                            ? (CHAR_STATS[CharacterType.PYRO].pyroDamageMultiplier || 1)
-                            : 1;
-                        takeDamage(e, baseDmg * rampMult * pyroMult * dt, CharacterType.PYRO, DamageType.FIRE);
+                        takeDamage(e, baseDmg * dt, CharacterType.PYRO, DamageType.FIRE);
                     }
                     if (Math.random() < 0.15) spawnParticles(e.pos, 1, '#ff4400', 1, 0.5);
                 }
@@ -4264,7 +4322,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             }
 
                             const penDamage = p.damage * damageMultiplier;
-                            takeDamage(target, penDamage);
+                            takeDamage(target, penDamage, CharacterType.TANK, DamageType.PHYSICAL);
                             Sound.playHit();
 
                             if (!p.hitTargets) p.hitTargets = [];
@@ -4301,7 +4359,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     // [New] Logic to clear spawnedInsideWall flag
                     if (p.spawnedInsideWall) {
                         const stillInside = state.obstacles.some(obs =>
-                            obs.type !== 'WATER' &&
+                            obs.type !== 'WATER' && obs.type !== 'LAVA' &&
                             Utils.checkCircleRectCollision(p.pos, p.radius, obs).collided
                         );
                         if (!stillInside) {
@@ -4371,9 +4429,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             if (!statusToApply) {
                                 // Fallback: Pick random if not pre-set
                                 const allDebuffs = Object.keys(STATUS_CONFIG).filter(k =>
-                                    !STATUS_CONFIG[k].isPositive &&
-                                    k !== 'disarm' &&
-                                    k !== 'wet'
+                                    STATUS_CONFIG[k].nature === 'negative' &&
+                                    k !== 'disarm'
                                 );
                                 statusToApply = allDebuffs[Math.floor(Math.random() * allDebuffs.length)];
                             }
@@ -4448,7 +4505,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             }
                         } else {
                             // 普通投射物 - 造成伤害
-                            takeDamage(hitEntity, p.damage);
+                            takeDamage(hitEntity, p.damage, CharacterType.MAGIC, DamageType.MAGIC);
                             Sound.playHit();
 
                             const pushDir = Utils.normalize(p.vel);
@@ -4509,7 +4566,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
                 } else {
                     // 命中玩家
-                    takeDamage(target, finalDamage);
+                    takeDamage(target, finalDamage, CharacterType.TANK, DamageType.PHYSICAL);
 
                     const pushDir = Utils.normalize(Utils.sub(target.pos, pos));
                     const baseForce = 10400;
@@ -4612,7 +4669,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (p.isWet) {
             // 1. 火焰球特殊机制：一旦进入潮湿状态，受双倍溺水伤害，持续产生蒸汽 (不要求停止移动)
             if (p.type === CharacterType.PYRO) {
-                takeDamage(p, 200 * dt); // 四倍持续伤害 (100 HP/s)
+                takeDamage(p, 200 * dt, CharacterType.ENVIRONMENT, DamageType.WATER); // 四倍持续伤害 (100 HP/s)
                 // 蒸汽特效 (Steam)
                 if (Math.random() < 0.4) {
                     stateRef.current.particles.push({
@@ -4630,7 +4687,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 2. 其他角色：保持原有的“只有在水中静止/缓慢移动时才会溺水”机制
             else if (Utils.mag(p.vel) < 0.8) {
                 // Sinking / Drowning
-                takeDamage(p, 50 * dt); // 标准持续伤害 (50 HP/s)
+                takeDamage(p, 50 * dt, CharacterType.ENVIRONMENT, DamageType.WATER); // 标准持续伤害 (50 HP/s)
                 if (Math.random() < 0.2) {
                     stateRef.current.particles.push({
                         id: Math.random().toString(),
@@ -4647,7 +4704,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             p.burnTimer -= dt;
             const flatBurn = 25;
             const percentBurn = p.maxHp * 0.015;
-            takeDamage(p, (flatBurn + percentBurn) * dt, CharacterType.PYRO, DamageType.FIRE);
+
+            // [New] Resolve burn source
+            let burnSourceType = CharacterType.ENVIRONMENT;
+            if (p.burnSourceId) {
+                const source = stateRef.current.players.find(sp => sp.id === p.burnSourceId);
+                if (source) burnSourceType = source.type;
+            }
+
+            takeDamage(p, (flatBurn + percentBurn) * dt, burnSourceType, DamageType.FIRE);
 
             if (Math.random() < 0.2) {
                 spawnParticles(p.pos, 1, '#f97316', 1, 0.6);
@@ -4856,8 +4921,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (p.id === g.ownerId) {
                             if (p.hp < p.maxHp) p.hp += 50 * dt;
                         } else {
-                            // 1. 造成持续伤害 (之前误删，补回)
-                            takeDamage(p, 50 * dt, CharacterType.PYRO, DamageType.FIRE);
+                            // 1. 造成持续伤害
+                            takeDamage(p, 50 * dt, CharacterType.ENVIRONMENT, DamageType.FIRE);
 
                             // 2. 施加状态 (直接调用 applyStatus，视觉频率由全局 CD 管理)
                             applyStatus(p, 'burn', 3.0, g.ownerId);
@@ -4899,7 +4964,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
         state.obstacles = state.obstacles.filter(obs => {
-            if (obs.type === 'WATER') return true; // 水域不可破坏          
+            if (obs.type === 'WATER' || obs.type === 'LAVA') return true; // 水域/岩浆不可破坏          
             const col = Utils.checkCircleRectCollision(center, radius, obs);
             if (col.collided) {
                 // 墙体破碎特效
@@ -4926,12 +4991,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 // 造成伤害
                 if ('isSummon' in t) {
-                    t.hp -= finalDamage; // 无人机受到衰减后的伤害
+                    t.hp -= finalDamage;
                     if (t.hp <= 0) {
                         killEntity(t, ownerId);
                     }
                 } else {
-                    takeDamage(t, finalDamage); // 玩家受到衰减后的伤害
+                    takeDamage(t, finalDamage, CharacterType.CAT, DamageType.PHYSICAL);
                     applyStatus(t, 'stun', 2.0);
                     t.statusLabel = "拍扁!";
                 }
@@ -5195,6 +5260,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.fillStyle = 'rgba(6, 182, 212, 0.3)';
                     ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
                     ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+                } else if (obs.type === 'LAVA') {
+                    // Lava Rendering
+                    ctx.fillStyle = 'rgba(234, 88, 12, 0.3)'; // Orange-600 transparent
+                    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+
+                    // Animated Bubbles/Glow? (Keep simple for now, matching Water style)
+                    ctx.strokeStyle = 'rgba(234, 88, 12, 0.6)';
                     ctx.lineWidth = 2;
                     ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
                 } else {
@@ -5759,7 +5833,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         const liftPct = p.wukongChargeTime / p.wukongMaxCharge;
                         const scale = 1 + liftPct * 0.5; // Scale up to 1.5x
                         ctx.scale(scale, scale);
-                        // Shift Y up to simulate jump (negative Y is up in 2D top-down perspective simulation)
                         ctx.translate(0, -liftPct * 30);
 
                         // Shake when holding max charge
@@ -6942,6 +7015,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             [CharacterType.TANK]: '坦克球',
             [CharacterType.COACH]: '教练球',
             [CharacterType.MAGIC]: '魔法球',
+            [CharacterType.ENVIRONMENT]: '环境',
         };
         return names[type] || '未知球体';
     };
