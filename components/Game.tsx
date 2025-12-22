@@ -1,9 +1,9 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
-    CharacterType, GameState, PlayerState, Vector2, TankMode, GroundEffect, Obstacle, Drone, DamageType
+    CharacterType, GameState, PlayerState, Vector2, TankMode, GroundEffect, Obstacle, Drone, DamageType, DangerZone
 } from '../types';
 import {
-    MAP_SIZE, PHYSICS, CHAR_STATS, STATUS_CONFIG, MAGIC_SPELL_LINES, TERRAIN_CONFIG
+    MAP_SIZE, PHYSICS, CHAR_STATS, STATUS_CONFIG, MAGIC_SPELL_LINES, TERRAIN_CONFIG, HAZARD_AFFINITY, DEFAULT_HAZARD_AFFINITY
 } from '../constants';
 
 import * as Utils from '../utils';
@@ -107,28 +107,28 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         return !!entity.isMechanical;
     };
 
-    // Helper: 完全无法行动（眩晕/催眠/石化）- 应立即 return
-    const isFullyIncapacitated = (p: PlayerState): boolean => {
-        return p.stunTimer > 0 || p.sleepTimer > 0 || (p.petrifyTimer || 0) > 0;
-    };
+    // 硬控状态计时器的属性名（对应 isControlled 中的六种状态）
+    const CONTROL_TIMER_KEYS = [
+        'stunTimer', 'sleepTimer', 'petrifyTimer',
+        'charmTimer', 'tauntTimer', 'fearTimer'
+    ] as const;
 
     // Helper: 任何形式的控制状态（用于隐藏指示器、禁止自主瞄准等）
     const isControlled = (p: PlayerState): boolean => {
-        return isFullyIncapacitated(p) ||
-            (p.charmTimer || 0) > 0 ||
-            (p.tauntTimer || 0) > 0 ||
-            (p.fearTimer || 0) > 0;
+        return CONTROL_TIMER_KEYS.some(key => (p[key as keyof PlayerState] as number || 0) > 0);
+    };
+
+    // Helper: 清除所有硬控效果
+    const clearControlEffects = (p: PlayerState) => {
+        CONTROL_TIMER_KEYS.forEach(key => {
+            (p as any)[key] = 0;
+        });
     };
 
     // Helper: 能否使用右键技能（防御/特殊技能）
-    // 排除：硬控(眩晕/催眠/石化) + 魅惑 + 恐惧 + 嘲讽 + 沉默
+    // 排除：isControlled (六种硬控) + 沉默
     const canUseSecondarySkill = (p: PlayerState): boolean => {
-        if (isFullyIncapacitated(p)) return false;  // 眩晕/催眠/石化
-        if ((p.charmTimer || 0) > 0) return false;  // 魅惑
-        if ((p.fearTimer || 0) > 0) return false;   // 恐惧
-        if ((p.tauntTimer || 0) > 0) return false;  // 嘲讽
-        if (p.silenceTimer > 0) return false;       // 沉默
-        return true;
+        return !isControlled(p) && p.silenceTimer <= 0;
     };
 
     // Helper: 能否使用空格大招（与右键相同逻辑，独立函数便于未来扩展）
@@ -364,6 +364,169 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         });
         return enemies;
     };
+
+    const getDangerZones = (entity: PlayerState, state: GameState): DangerZone[] => {
+        const dangerZones: DangerZone[] = [];
+        const affinity = { ...DEFAULT_HAZARD_AFFINITY, ...(HAZARD_AFFINITY[entity.type] || {}) };
+
+        // 1. Skill Hazards (Ground Effects)
+        const skillWeight = affinity.SKILL ?? 1.0;
+        if (skillWeight !== 0) {
+            state.groundEffects.forEach(eff => {
+                if (eff.ownerId === entity.id) return;
+
+                if (eff.type === 'SCOOPER_WARNING') {
+                    dangerZones.push({
+                        type: 'CIRCLE',
+                        hazardType: 'SKILL',
+                        center: eff.pos,
+                        radius: eff.radius,
+                        timeLeft: eff.life,
+                        weight: skillWeight
+                    });
+                }
+            });
+        }
+
+        // 2. Enemy Charging Skills
+        if (skillWeight !== 0) {
+            const allEnemies = getEnemies(entity);
+            allEnemies.forEach(enemy => {
+                if (enemy.isDead) return;
+
+                if (enemy.type === CharacterType.WUKONG && enemy.wukongChargeState === 'THRUST') {
+                    const aimDir = { x: Math.cos(enemy.aimAngle), y: Math.sin(enemy.aimAngle) };
+                    const range = CHAR_STATS.WUKONG.thrustMaxRange;
+                    const timeLeft = Math.max(0, enemy.wukongMaxCharge - enemy.wukongChargeTime);
+
+                    dangerZones.push({
+                        type: 'RECT',
+                        hazardType: 'SKILL',
+                        p1: enemy.pos,
+                        p2: Utils.add(enemy.pos, Utils.mult(aimDir, range)),
+                        width: 50,
+                        timeLeft: timeLeft,
+                        weight: skillWeight
+                    });
+                }
+
+                if (enemy.type === CharacterType.WUKONG && enemy.wukongChargeState === 'SMASH') {
+                    const range = CHAR_STATS.WUKONG.smashMaxRange;
+                    let timeLeft = 0;
+                    if (enemy.wukongChargeTime < enemy.wukongMaxCharge) {
+                        timeLeft = (enemy.wukongMaxCharge - enemy.wukongChargeTime) + 1.0;
+                    } else {
+                        timeLeft = Math.max(0, 1.0 - enemy.wukongChargeHoldTimer);
+                    }
+
+                    dangerZones.push({
+                        type: 'CIRCLE',
+                        hazardType: 'SKILL',
+                        center: enemy.pos,
+                        radius: range + 10,
+                        timeLeft: timeLeft,
+                        weight: skillWeight
+                    });
+                }
+            });
+        }
+
+        // 3. Water Hazards
+        const waterWeight = affinity.WATER ?? 1.0;
+        if (waterWeight !== 0) {
+            state.obstacles.filter(obs => obs.type === 'WATER').forEach(water => {
+                dangerZones.push({
+                    type: 'RECT',
+                    hazardType: 'WATER',
+                    p1: { x: water.x, y: water.y + water.height / 2 },
+                    p2: { x: water.x + water.width, y: water.y + water.height / 2 },
+                    width: water.height,
+                    timeLeft: 99, // [Fix] Permanent terrain has near-infinite escape time
+                    weight: waterWeight
+                });
+            });
+        }
+
+        // 4. Magma Hazards (Note: Magma地形目前尚未在obstacles中定义，这里预留接口)
+        const magmaWeight = affinity.MAGMA ?? 0; // Default to 0 until terrain exists
+        if (magmaWeight !== 0) {
+            // Future: state.obstacles.filter(obs => obs.type === 'MAGMA')...
+            // 特殊逻辑：Pyro Ball 在 Magma Pool 中获得负权重（安全/吸引）
+            if (entity.type === CharacterType.PYRO) {
+                state.groundEffects.filter(eff => eff.type === 'MAGMA_POOL').forEach(pool => {
+                    dangerZones.push({
+                        type: 'CIRCLE',
+                        hazardType: 'MAGMA',
+                        center: pool.pos,
+                        radius: pool.radius,
+                        timeLeft: pool.life,
+                        weight: magmaWeight
+                    });
+                });
+            }
+        }
+
+        // 5. Walls (Obstacles)
+        const wallWeight = affinity.WALL ?? 0;
+        if (wallWeight !== 0) {
+            state.obstacles.filter(obs => obs.type !== 'WATER').forEach(wall => {
+                dangerZones.push({
+                    type: 'RECT',
+                    hazardType: 'WALL',
+                    p1: { x: wall.x, y: wall.y + wall.height / 2 },
+                    p2: { x: wall.x + wall.width, y: wall.y + wall.height / 2 },
+                    width: wall.height,
+                    timeLeft: 99,
+                    weight: wallWeight
+                });
+            });
+        }
+
+        return dangerZones;
+    };
+
+    const getPointDangerInfo = (pt: Vector2, zone: DangerZone): { inside: boolean, escapeVec: Vector2, distToEdge: number } => {
+        let inside = false;
+        let escapeVec: Vector2 = { x: 0, y: 0 };
+        let distToEdge = 0;
+
+        if (zone.type === 'CIRCLE') {
+            const d = Utils.dist(pt, zone.center!);
+            if (d < zone.radius!) {
+                inside = true;
+                const dirToPt = Utils.sub(pt, zone.center!);
+                const normDir = Utils.mag(dirToPt) === 0 ? { x: 1, y: 0 } : Utils.normalize(dirToPt);
+                distToEdge = zone.radius! - d + 5; // +5 padding
+                escapeVec = normDir;
+            }
+        } else if (zone.type === 'RECT') {
+            // Point Line Distance
+            const l2 = Utils.dist(zone.p1!, zone.p2!) ** 2;
+            let t = 0;
+            if (l2 !== 0) {
+                t = ((pt.x - zone.p1!.x) * (zone.p2!.x - zone.p1!.x) + (pt.y - zone.p1!.y) * (zone.p2!.y - zone.p1!.y)) / l2;
+                t = Math.max(0, Math.min(1, t));
+            }
+            const projection = Utils.add(zone.p1!, Utils.mult(Utils.sub(zone.p2!, zone.p1!), t));
+            const d = Utils.dist(pt, projection);
+
+            const halfWidth = zone.width! / 2;
+            if (d < halfWidth) {
+                inside = true;
+                const dirAway = Utils.sub(pt, projection);
+                const normDir = Utils.mag(dirAway) === 0
+                    ? { x: -(zone.p2!.y - zone.p1!.y), y: (zone.p2!.x - zone.p1!.x) } // arbitrary perp
+                    : Utils.normalize(dirAway);
+
+                distToEdge = halfWidth - d + 20; // +20 padding
+                escapeVec = Utils.normalize(normDir);
+            }
+        }
+
+        return { inside, escapeVec, distToEdge };
+    };
+
+
 
     // [新增] 获取所有可攻击目标（实现友军伤害）- 返回所有存活的玩家和无人机，除了自己
     const getAllAttackTargets = (p: PlayerState) => {
@@ -797,6 +960,21 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             'revive': 'isDead'
         };
 
+        // [New] Magic Shield Immunity Logic
+        // While shield is active, immune to all CC (Hard & Soft)
+        if ((target.magicShieldHp || 0) > 0) {
+            const ccTypes = [
+                'stun', 'root', 'silence', 'fear', 'charm', 'sleep',
+                'petrify', 'taunt', 'slow', 'disarm', 'blind'
+            ];
+            if (ccTypes.includes(type)) {
+                // Determine block color based on form
+                const blockColor = target.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
+                spawnParticles(target.pos, 3, blockColor, 2, 0.3);
+                return; // IMMUNE
+            }
+        }
+
         // [New] Update Status History for Color Logic (Latest Applied)
         // Ensure array exists
         if (!target.statusHistory) target.statusHistory = [];
@@ -940,7 +1118,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     applyStatus(e, 'fear', 2.5);
                 } else {
                     applyStatus(e, 'charm', 1.5);
-                    if (!isMechanical(e)) e.statusLabel = "被萌翻!";
+                    if (!isMechanical(e) && (e.magicShieldHp || 0) <= 0) e.statusLabel = "被萌翻!";
                 }
             }
         });
@@ -957,7 +1135,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     const handleCatPounce = (p: PlayerState, chargeTime: number) => {
         // 控制状态下禁止飞扑
-        if (isFullyIncapacitated(p) || (p.charmTimer || 0) > 0 || (p.fearTimer || 0) > 0) return;
+        if (isControlled(p)) return;
         if (p.disarmTimer > 0) return; // 缴械禁止普攻类技能
         const stats = CHAR_STATS[CharacterType.CAT];
 
@@ -1078,7 +1256,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     const handleCatScratch = (p: PlayerState) => {
         // 控制状态下禁止抓挠
-        if (isFullyIncapacitated(p) || (p.charmTimer || 0) > 0 || (p.fearTimer || 0) > 0) return;
+        if (isControlled(p)) return;
         if (p.disarmTimer > 0) return;
         if (p.attackCooldown > 0) return;
         if (p.isPouncing) return;
@@ -1229,39 +1407,105 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     // 计算最安全位置（用于移形换影）
     const calculateSafestPosition = (p: PlayerState): Vector2 => {
         const enemies = getEnemies(p);
-        if (enemies.length === 0) return p.pos;
 
-        // 尝试多个方向，选择离所有敌人最远的位置
-        let bestPos = p.pos;
-        let bestMinDist = 0;
-        const blinkRange = 300;
+        // Sampling points: Grid based approach for whole map coverage
+        const points: Vector2[] = [];
+        const step = 200; // Grid resolution
+        const margin = 100;
 
-        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 8) {
-            const testPos = {
-                x: Utils.clamp(p.pos.x + Math.cos(angle) * blinkRange, 50, MAP_SIZE.width - 50),
-                y: Utils.clamp(p.pos.y + Math.sin(angle) * blinkRange, 50, MAP_SIZE.height - 50)
-            };
-
-            // 检查是否在墙里或水里 (Avoid WALL and WATER)
-            const isHazard = stateRef.current.obstacles.some(obs =>
-                (obs.type === 'WALL' || obs.type === 'WATER') &&
-                testPos.x > obs.x && testPos.x < obs.x + obs.width &&
-                testPos.y > obs.y && testPos.y < obs.y + obs.height
-            );
-            if (isHazard) continue;
-
-            // 计算离最近敌人的距离
-            let minDistToEnemy = Infinity;
-            enemies.forEach(e => {
-                const d = Utils.dist(testPos, e.pos);
-                if (d < minDistToEnemy) minDistToEnemy = d;
-            });
-
-            if (minDistToEnemy > bestMinDist) {
-                bestMinDist = minDistToEnemy;
-                bestPos = testPos;
+        // 1. Grid Points
+        for (let x = margin; x < MAP_SIZE.width - margin; x += step) {
+            for (let y = margin; y < MAP_SIZE.height - margin; y += step) {
+                points.push({ x, y });
             }
         }
+
+        // 2. Add some random points for variance
+        for (let i = 0; i < 20; i++) {
+            points.push({
+                x: margin + Math.random() * (MAP_SIZE.width - 2 * margin),
+                y: margin + Math.random() * (MAP_SIZE.height - 2 * margin)
+            });
+        }
+
+        let bestPos = p.pos;
+        let bestScore = -Infinity;
+
+        // [Unified] Get all danger zones
+        const dangerZones = getDangerZones(p, stateRef.current);
+
+        points.forEach(pt => {
+            // 1. Check Hard Constraints (Walls, Map Bounds)
+            // [Modified] Water is now handled in DangerZones with Weights
+            const isInsideWall = stateRef.current.obstacles.some(obs =>
+                obs.type === 'WALL' &&
+                pt.x > obs.x && pt.x < obs.x + obs.width &&
+                pt.y > obs.y && pt.y < obs.y + obs.height
+            );
+
+            // If it's a Wall and MAGIC ball has negative weight, we allow it (Blink through/on walls)
+            const wallAffinity = (HAZARD_AFFINITY[p.type] || {}).WALL ?? 0;
+            if (isInsideWall && wallAffinity >= 0) return;
+
+            // 2. Check Map Bounds
+            if (pt.x < margin || pt.x > MAP_SIZE.width - margin || pt.y < margin || pt.y > MAP_SIZE.height - margin) return;
+
+            // 3. Score Calculation
+            let score = 0;
+
+            // Hazard Scoring (Unified)
+            dangerZones.forEach(zone => {
+                const { inside } = getPointDangerInfo(pt, zone);
+                if (inside) {
+                    const weight = zone.weight ?? 1.0;
+                    if (weight > 0) {
+                        score -= 5000 * weight; // Heavy penalty
+                    } else if (weight < 0) {
+                        score += 500 * Math.abs(weight); // Bonus for "safe" spots
+                    }
+                }
+            });
+
+            // Factor A: Distance from Start (Farther is better for escape, but give it a cap)
+            const distFromStart = Utils.dist(p.pos, pt);
+            // [Modified] Slightly reduced weight to avoid over-prioritizing distance
+            score += Math.min(distFromStart, 600) * 1.0;
+
+            // Factor B: Enemy Safety
+            if (enemies.length > 0) {
+                let minEnemyDist = Infinity;
+                let nearbyEnemyCount = 0;
+
+                enemies.forEach(e => {
+                    const d = Utils.dist(pt, e.pos);
+                    if (d < minEnemyDist) minEnemyDist = d;
+                    if (d < 400) nearbyEnemyCount++; // Danger radius
+                });
+
+                // [Modified] Reward being far from the nearest enemy, but CAP it.
+                // We want "safe enough", not "mathematically farthest (corners)".
+                score += Math.min(minEnemyDist, 1000) * 2.0;
+
+                // Penalize being close to ANY enemy (Safety threshold)
+                if (minEnemyDist < 300) {
+                    score -= 5000; // Heavy penalty for landing near enemy
+                }
+
+                // Penalize density of enemies
+                score -= nearbyEnemyCount * 1000;
+            } else {
+                // If no enemies, just maximize distance from start slightly more
+                score += Math.min(distFromStart, 1000) * 2.0;
+            }
+
+            // [New] Add Random Noise to avoid deterministic "perfect" spots every time
+            score += Math.random() * 300;
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestPos = pt;
+            }
+        });
 
         return bestPos;
     };
@@ -1275,7 +1519,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        const spell = Math.floor(Math.random() * 3);
+        let spell = 2;//const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
             // 《除你武器》
@@ -1321,38 +1565,68 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 《盔甲护身》- 护盾
             // Cost: 40 MP
             if ((p.mp || 0) < stats.protectManaCost) return;
+
+            // Prevent recasting while shield is active
+            if ((p.magicShieldHp || 0) > 0) return;
+
             p.mp! -= stats.protectManaCost;
 
             p.magicShieldHp = stats.armorShieldHp;
             p.magicShieldTimer = stats.armorDuration / 1000;
+            p.magicShieldDamageLevel = 0; // [New] Reset damage level
             p.statusLabel = MAGIC_SPELL_LINES.armor + '!';
+
+            // Visuals & Sound
             spawnParticles(p.pos, 15, '#c0c0c0', 5, 0.8);
-            p.secondarySkillCooldown = stats.armorCooldown / 1000;
+            Sound.playSkill('SHIELD_ACTIVATE');
+            p.secondarySkillCooldown = 0.5; // Shared internal min CD
+
+            // [New] Knockback nearby units on activation
+            const shieldR = p.radius + 30;
+            getEnemies(p).forEach(enemy => {
+                if (enemy.isDead) return;
+                const diff = Utils.sub(enemy.pos, p.pos);
+                const d = Utils.mag(diff);
+                const minDist = shieldR + enemy.radius;
+                if (d < minDist) {
+                    // [Fix] One-way position resolution: Move enemy only, caster stays static
+                    const dir = d > 0 ? Utils.normalize(diff) : { x: 1, y: 0 };
+                    enemy.pos = Utils.add(p.pos, Utils.mult(dir, minDist + 1));
+
+                    const knockbackForce = 4; // Use the lower force requested by user
+                    applyKnockback(enemy, p.pos, knockbackForce);
+                }
+            });
         }
         else {
-            // 《移形换影》- 解控+闪现
-            // Cost: 40 MP
-            if ((p.mp || 0) < stats.protectManaCost) return;
-            p.mp! -= stats.protectManaCost;
+            // 《移形换影》- 解除控制+闪现
+            // Cost: 100 MP
+            const cost = (stats as any).blinkManaCost || 100;
 
-            // 解除所有控制
-            p.stunTimer = 0; p.rootTimer = 0; p.slowTimer = 0;
-            p.fearTimer = 0; p.silenceTimer = 0; p.disarmTimer = 0;
-            p.sleepTimer = 0; p.petrifyTimer = 0;
+            if ((p.mp || 0) < cost) return;
+            p.mp! -= cost;
+
+            // 解除所有控制 (Cleanse)
+            clearControlEffects(p);
 
             // 生成闪现特效（起点）
             spawnParticles(p.pos, 20, p.magicForm === 'WHITE' ? '#f8fafc' : '#1f2937', 6, 0.5);
+            Sound.playSkill('BLINK'); // Create if missing or map to closest
 
             // 计算最安全位置并闪现
             const safePos = calculateSafestPosition(p);
             p.pos = safePos;
+            // Immediate CD: 9 seconds
+            p.secondarySkillCooldown = 9.0;
 
             // 生成闪现特效（终点）
-            spawnParticles(p.pos, 20, p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e', 6, 0.5);
+            spawnParticles(p.pos, 25, p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e', 8, 0.8);
+
+            // Add slight invulnerability buffer? (Optional, maybe not requested, so skipping)
 
             p.statusLabel = MAGIC_SPELL_LINES.blink + '!';
             p.statusLabelColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
-            p.secondarySkillCooldown = stats.blinkCooldown / 1000;
+
         }
     };
 
@@ -1804,12 +2078,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const releaseWukongThrust = (p: PlayerState) => {
-        // 如果在蓄力过程中被控，取消蓄力并返回（不释放技能）
-        if (isFullyIncapacitated(p) || (p.charmTimer || 0) > 0 || (p.fearTimer || 0) > 0) {
-            p.wukongChargeState = 'NONE';
-            p.wukongChargeTime = 0;
-            return;
-        }
         const chargePct = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
         const stats = CHAR_STATS[CharacterType.WUKONG];
         const damage = stats.thrustMinDmg + (stats.thrustMaxDmg - stats.thrustMinDmg) * chargePct;
@@ -1857,13 +2125,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const releaseWukongSmash = (p: PlayerState) => {
-        // 如果在蓄力过程中被控，取消蓄力并返回（不释放技能）
-        if (isFullyIncapacitated(p) || (p.charmTimer || 0) > 0 || (p.fearTimer || 0) > 0 || (p.tauntTimer || 0) > 0) {
-            p.wukongChargeState = 'NONE';
-            p.wukongChargeTime = 0;
-            p.wukongChargeHoldTimer = 0;
-            return;
-        }
         // 1. Calculate stats based on charge
         const chargePct = Math.min(1, p.wukongChargeTime / p.wukongMaxCharge);
         const stats = CHAR_STATS[CharacterType.WUKONG];
@@ -1996,6 +2257,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (target.type === CharacterType.WUKONG && target.wukongChargeState !== 'NONE') {
             force *= 0.2; // 80% Resistance
         }
+
+        // [New] Magic Shield Immunity (Immovable Object)
+        if ((target.magicShieldHp || 0) > 0) {
+            return;
+        }
+
         const impulse = force * 2;
         const dv = Utils.mult(dir, impulse / target.mass);
         target.vel = Utils.add(target.vel, dv);
@@ -2060,6 +2327,41 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Wukong Fire Resistance (30% reduction)
         if (p.type === CharacterType.WUKONG && damageType === DamageType.FIRE) {
             finalDmg *= 0.7;
+        }
+
+        // --- Magic Shield Absorption ---
+        if ((p.magicShieldHp || 0) > 0 && finalDmg > 0) {
+            const stats = CHAR_STATS[CharacterType.MAGIC];
+            const maxShieldHp = stats.armorShieldHp;
+            const absorb = Math.min(finalDmg, p.magicShieldHp!);
+            // Shield absorbed damage
+            p.magicShieldHp! -= absorb;
+            finalDmg -= absorb; // Reduce remaining damage
+
+            // [New] Impact Feedback
+            p.magicShieldShakeTimer = 0.2;
+            const themeColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
+            spawnParticles(p.pos, 5, themeColor, 3, 0.4);
+
+            // [New] Progressive Crack Sound (at 80%, 60%, 40%, 20%)
+            const ratio = p.magicShieldHp! / maxShieldHp;
+            const newLevel = ratio <= 0.2 ? 4 : ratio <= 0.4 ? 3 : ratio <= 0.6 ? 2 : ratio <= 0.8 ? 1 : 0;
+            if (newLevel > (p.magicShieldDamageLevel || 0)) {
+                p.magicShieldDamageLevel = newLevel;
+                Sound.playSkill('SHIELD_CRACK');
+            }
+
+            if (p.magicShieldHp! <= 0) {
+                p.magicShieldHp = 0;
+                p.magicShieldTimer = 0;
+                p.secondarySkillCooldown = stats.armorCooldown / 1000;
+
+                // [New] Grand Shatter Effect (Glass Shards + Sound)
+                spawnShards(p.pos, 60, themeColor);
+                Sound.playSkill('SHIELD_SHATTER');
+
+                spawnParticles(p.pos, 10, '#ffffff', 8, 1.2);
+            }
         }
 
         p.hp -= finalDmg;
@@ -2264,7 +2566,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 // 仅处理该优先级的碰撞
                 activeCollisions.forEach(({ obs, col, priority }) => {
-                    if (priority < maxPriority) return;
+                    // [Fix] Always process WATER collisions to prevent walking on water
+                    // even if touching a higher priority WALL
+                    if (priority < maxPriority && obs.type !== 'WATER') return;
 
                     if (p1.type === CharacterType.WUKONG && obs.type === 'WALL') {
                         // 悟空翻墙逻辑
@@ -2337,8 +2641,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             p1.isWet = shouldBeWet && !p1.isPouncing;
 
             if (!wasWet && p1.isWet) {
-                // [Modified] Pass current position to ensure floating text appears at entry point
-                applyStatus(p1, 'wet', 0, undefined, p1.pos);
+                // [Modified] Remove fixed position to allow floating text to follow the target during knockback
+                applyStatus(p1, 'wet', 0);
             }
 
             // 玩家间碰撞 (Player vs Player) - 双重循环
@@ -2348,7 +2652,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 const distVec = Utils.sub(p1.pos, p2.pos);
                 const dist = Utils.mag(distVec);
-                const minDist = p1.radius + p2.radius;
+
+                // [New] Dynamic collision radius for Magic Shield
+                const r1 = (p1.magicShieldHp && p1.magicShieldHp > 0) ? (p1.radius + 30) : p1.radius;
+                const r2 = (p2.magicShieldHp && p2.magicShieldHp > 0) ? (p2.radius + 30) : p2.radius;
+                const minDist = r1 + r2;
 
                 if (dist < minDist) {
                     // 飞扑时忽略物理碰撞
@@ -2414,7 +2722,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         spawnParticles(target.pos, 15, '#f0abfc', 6);
                         Sound.playShot('SCRATCH');
                         cat.hasPounceHit = true;
-                        target.statusLabel = "踩!";
+                        if ((target.magicShieldHp || 0) <= 0) target.statusLabel = "踩!";
                     }
                 });
             }
@@ -2564,7 +2872,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     const handlePlayerInput = (p: PlayerState, dt: number) => {
         // 完全硬控状态 - 立即返回，不处理任何输入
-        if (isFullyIncapacitated(p)) {
+        if (isControlled(p)) {
             p.vel = Utils.mult(p.vel, 0.8);
             return;
         }
@@ -3042,84 +3350,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
         }
 
-        interface DangerZone {
-            type: 'CIRCLE' | 'RECT';
-            timeLeft: number; // Seconds until impact
-            // Circle
-            center?: Vector2;
-            radius?: number;
-            // Rect (Capsule-like for beams/thrusts)
-            p1?: Vector2;
-            p2?: Vector2;
-            width?: number; // Total width (diameter)
-        }
-
         // -------------------------------------------------------------
         // [新增] 危机回避模块 / Evasion Module
         // -------------------------------------------------------------
-        const dangerZones: DangerZone[] = [];
-
-        // A. 扫描地面警告 (如猫猫球大招)
-        stateRef.current.groundEffects.forEach(eff => {
-            // [New] AI treats its own effects as safe
-            if (eff.ownerId === ai.id) return;
-
-            if (eff.type === 'SCOOPER_WARNING') {
-                dangerZones.push({
-                    type: 'CIRCLE',
-                    center: eff.pos,
-                    radius: eff.radius,
-                    timeLeft: eff.life // Effect life corresponds to delay
-                });
-            }
-        });
-
-        // B. 扫描敌人蓄力技能 (如悟空)
-        // 即使没有直接的目标(target), 也要扫描所有潜在敌人
-        const allEnemies = getEnemies(ai);
-        allEnemies.forEach(enemy => {
-            if (enemy.isDead) return;
-
-            // B1. Wukong Thrust (Right Click)
-            if (enemy.type === CharacterType.WUKONG && enemy.wukongChargeState === 'THRUST') {
-                // Assume aiming at current angle
-                const aimDir = { x: Math.cos(enemy.aimAngle), y: Math.sin(enemy.aimAngle) };
-                const range = CHAR_STATS.WUKONG.thrustMaxRange;
-                // Time left: Charge Time Remaining (Auto release at max)
-                const timeLeft = Math.max(0, enemy.wukongMaxCharge - enemy.wukongChargeTime);
-
-                dangerZones.push({
-                    type: 'RECT',
-                    p1: enemy.pos,
-                    p2: Utils.add(enemy.pos, Utils.mult(aimDir, range)),
-                    width: 50, // width approx
-                    timeLeft: timeLeft
-                });
-            }
-
-            // B2. Wukong Smash (Ultimate)
-            if (enemy.type === CharacterType.WUKONG && enemy.wukongChargeState === 'SMASH') {
-                // AI assumes worst case (Max Range) for safety
-                const range = CHAR_STATS.WUKONG.smashMaxRange;
-
-                // Time left logic: 
-                // If charging: (Max - Current) + HoldTime(1.0s)
-                // If holding: (1.0 - HoldTimer)
-                let timeLeft = 0;
-                if (enemy.wukongChargeTime < enemy.wukongMaxCharge) {
-                    timeLeft = (enemy.wukongMaxCharge - enemy.wukongChargeTime) + 1.0;
-                } else {
-                    timeLeft = Math.max(0, 1.0 - enemy.wukongChargeHoldTimer);
-                }
-
-                dangerZones.push({
-                    type: 'CIRCLE',
-                    center: enemy.pos,
-                    radius: range + 10, // Add slight buffer
-                    timeLeft: timeLeft
-                });
-            }
-        });
+        const dangerZones = getDangerZones(ai, stateRef.current);
 
         // C. 计算最佳逃离向量
         let evasionDir: Vector2 | null = null;
@@ -3135,47 +3369,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const aiSpeedPPS = 120 * CHAR_STATS[ai.type].speed * 0.8;
 
         for (const zone of dangerZones) {
-            let inside = false;
-            let escapeVec: Vector2 = { x: 0, y: 0 };
-            let distToEdge = 0;
-
-            if (zone.type === 'CIRCLE') {
-                const dist = Utils.dist(ai.pos, zone.center!);
-                if (dist < zone.radius!) {
-                    inside = true;
-                    // Escape away from center
-                    const dirToAi = Utils.sub(ai.pos, zone.center!);
-                    // If directly on center, pick random
-                    const normDir = Utils.mag(dirToAi) === 0 ? { x: 1, y: 0 } : Utils.normalize(dirToAi);
-                    distToEdge = zone.radius! - dist + 5; // +5 padding
-                    escapeVec = Utils.mult(normDir, 1);
-                }
-            } else if (zone.type === 'RECT') {
-                // Point Line Distance
-                const l2 = Utils.dist(zone.p1!, zone.p2!) ** 2;
-                let t = 0;
-                if (l2 !== 0) {
-                    t = ((ai.pos.x - zone.p1!.x) * (zone.p2!.x - zone.p1!.x) + (ai.pos.y - zone.p1!.y) * (zone.p2!.y - zone.p1!.y)) / l2;
-                    t = Math.max(0, Math.min(1, t));
-                }
-                const projection = Utils.add(zone.p1!, Utils.mult(Utils.sub(zone.p2!, zone.p1!), t));
-                const dist = Utils.dist(ai.pos, projection);
-
-                const halfWidth = zone.width! / 2;
-                if (dist < halfWidth) {
-                    inside = true;
-                    // Escape perpendicular away from the line
-                    const dirAway = Utils.sub(ai.pos, projection);
-                    const normDir = Utils.mag(dirAway) === 0
-                        ? { x: -(zone.p2!.y - zone.p1!.y), y: (zone.p2!.x - zone.p1!.x) } // arbitrary perp
-                        : Utils.normalize(dirAway);
-
-                    distToEdge = halfWidth - dist + 20; // +20 padding
-                    escapeVec = Utils.mult(Utils.normalize(normDir), 1);
-                }
-            }
+            const { inside, escapeVec, distToEdge } = getPointDangerInfo(ai.pos, zone);
 
             if (inside) {
+                // [Unified] Only evade hazards with positive danger weight
+                if ((zone.weight ?? 1.0) <= 0) continue;
+
                 // Check Feasibility
                 const timeNeeded = distToEdge / aiSpeedPPS;
 
@@ -3579,6 +3778,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 } else if (distToTarget > optimalRange + 50) {
                     finalMoveDir = Utils.normalize(moveDir);
                 } else {
+                    // Strafe
                     const perp = { x: -moveDir.y, y: moveDir.x };
                     const strafe = Utils.mult(Utils.normalize(perp), (ai.aiStrafeDir || 1) * 0.6);
                     // Add slight random noise to vector to prevent locked path
@@ -3596,7 +3796,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             fireArtillery(ai, target.pos); ai.artilleryAmmo--; ai.attackCooldown = 3.5;
                         }
                     } else {
-                        if (ai.lmgAmmo > 0) {
+                        if (!ai.isReloadingLmg && ai.lmgAmmo > 0) {
                             fireLMG(ai); ai.lmgAmmo--; ai.attackCooldown = 0.1;
                             if (ai.lmgAmmo <= 0) { ai.lmgAmmo = 0; ai.isReloadingLmg = true; ai.lmgReloadTimer = 0; }
                         } else {
@@ -3935,6 +4135,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     const fireLMG = (p: PlayerState) => {
         if (p.disarmTimer > 0) return;
+        if (p.isReloadingLmg) return; // Prevent shooting while reloading
         Sound.playShot('LMG');
         const dir = { x: Math.cos(p.aimAngle), y: Math.sin(p.aimAngle) };
         const spread = (Math.random() - 0.5) * 0.2;
@@ -4113,29 +4314,29 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
 
                 if (!hitWall) {
-                    // 1. 检查撞到玩家 - [友军伤害] 可撞到所有目标
+                    // 1. 检查撞到玩家
                     for (const pl of state.players) {
-                        // 判定：非自己，未死亡
                         if (pl.id !== p.ownerId && !pl.isDead) {
-                            if (Utils.dist(p.pos, pl.pos) < pl.radius + p.radius) {
+                            // [New] Dynamic collision radius for Magic Shield
+                            const effectiveRadius = (pl.magicShieldHp && pl.magicShieldHp > 0) ? (pl.radius + 30) : pl.radius;
+                            if (Utils.dist(p.pos, pl.pos) < effectiveRadius + p.radius) {
                                 hitEntity = pl;
                                 break;
                             }
                         }
                     }
+                }
+                // 2. 检查撞到无人机 (如果还没撞到人)
+                if (!hitEntity) {
+                    for (const d of state.drones) {
 
-                    // 2. 检查撞到无人机 (如果还没撞到人)
-                    if (!hitEntity) {
-                        for (const d of state.drones) {
+                        // 判定：非自己的无人机，且存活 - [友军伤害] 可攻击所有无人机
+                        const isValidTarget = d.ownerId !== p.ownerId;
 
-                            // 判定：非自己的无人机，且存活 - [友军伤害] 可攻击所有无人机
-                            const isValidTarget = d.ownerId !== p.ownerId;
-
-                            if (isValidTarget && d.hp > 0 && !d.isDocked) {
-                                if (Utils.dist(p.pos, d.pos) < d.radius + p.radius) {
-                                    hitEntity = d;
-                                    break;
-                                }
+                        if (isValidTarget && d.hp > 0 && !d.isDocked) {
+                            if (Utils.dist(p.pos, d.pos) < d.radius + p.radius) {
+                                hitEntity = d;
+                                break;
                             }
                         }
                     }
@@ -4177,10 +4378,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                 statusToApply = allDebuffs[Math.floor(Math.random() * allDebuffs.length)];
                             }
 
+                            const initialStatus = statusToApply; // [New] Store for line triggering
+
                             // 2. Mechanical Immunity Check (Unified)
                             if (isMechanical(hitEntity)) {
                                 const immune = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
-                                if (immune.includes(statusToApply)) {
+                                if (initialStatus && immune.includes(initialStatus)) {
                                     statusToApply = undefined; // Immune
                                     hitEntity.statusLabel = "无效!";
                                     spawnParticles(hitEntity.pos, 5, '#9ca3af', 2);
@@ -4188,16 +4391,19 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             }
 
                             // 3. Apply Status & Visuals
-                            if (statusToApply) {
-                                const duration = 0.5 + Math.random() * 2.5;
-                                applyStatus(hitEntity, statusToApply, duration, p.ownerId);
+                            const owner = state.players.find(pl => pl.id === p.ownerId);
+                            const finalStatus = statusToApply; // Reference for line triggering
 
-                                // [New] Show floating text on Caster when hit confirms
-                                const owner = state.players.find(pl => pl.id === p.ownerId);
-                                if (owner && MAGIC_SPELL_LINES[statusToApply]) {
-                                    owner.statusLabel = MAGIC_SPELL_LINES[statusToApply] + '!';
-                                    owner.statusLabelColor = p.color; // Use projectile color which matches form
-                                }
+                            if (finalStatus) {
+                                const duration = 0.5 + Math.random() * 2.5;
+                                applyStatus(hitEntity, finalStatus, duration, p.ownerId);
+                            }
+
+                            // [New] Show floating text on Caster whenever a spell identifies a valid line, even if target is immune
+                            const lineStatus = p.statusType || initialStatus;
+                            if (owner && lineStatus && MAGIC_SPELL_LINES[lineStatus]) {
+                                owner.statusLabel = MAGIC_SPELL_LINES[lineStatus] + '!';
+                                owner.statusLabelColor = p.color;
                             }
                             spawnParticles(p.pos, 15, p.color, 6);
 
@@ -4238,6 +4444,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                             if (owner) {
                                 owner.statusLabel = MAGIC_SPELL_LINES.disarm + '!';
+                                owner.statusLabelColor = p.color;
                             }
                         } else {
                             // 普通投射物 - 造成伤害
@@ -4492,7 +4699,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 if (p.artilleryReloadTimer >= CHAR_STATS[CharacterType.TANK].artilleryRegenTime) {
                     p.artilleryAmmo += 1;
                     p.artilleryReloadTimer = 0;
-                    if (p.type === CharacterType.TANK && p.id === 'player') Sound.playSkill('RELOAD');
+                    if (p.type === CharacterType.TANK) Sound.playSkill('RELOAD');
                 }
             }
 
@@ -4505,7 +4712,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     p.lmgAmmo = p.maxLmgAmmo;
                     p.isReloadingLmg = false;
                     p.lmgReloadTimer = 0;
-                    if (p.id === 'player') Sound.playSkill('RELOAD');
+                    Sound.playSkill('RELOAD');
                 }
             }
 
@@ -4530,17 +4737,27 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             p.mp = Math.min((p.mp || 0) + mpRegen * dt, p.maxMp || stats.maxMp);
 
             // 护盾计时
-            if (p.magicShieldTimer && p.magicShieldTimer > 0) {
-                p.magicShieldTimer -= dt;
-                if (p.magicShieldTimer <= 0) {
-                    p.magicShieldHp = 0;
-                }
+            if ((p.magicShieldHp || 0) <= 0 && (p.magicShieldTimer || 0) > 0) {
+                p.magicShieldTimer = 0;
+            }
+
+            // [New] Magic Shield Shake Timer
+            if (p.magicShieldShakeTimer && p.magicShieldShakeTimer > 0) {
+                p.magicShieldShakeTimer -= dt;
+                if (p.magicShieldShakeTimer < 0) p.magicShieldShakeTimer = 0;
+            }
+
+            // Expiration (Time runs out)
+            if ((p.magicShieldTimer || 0) <= 0 && (p.magicShieldHp || 0) > 0) {
+                p.magicShieldHp = 0;
+                // CD triggers on expiration
+                p.secondarySkillCooldown = CHAR_STATS[CharacterType.MAGIC].armorCooldown / 1000;
             }
 
             // 光灵球效果
             if (p.lightSpiritTimer && p.lightSpiritTimer > 0) {
                 p.lightSpiritTimer -= dt;
-                // 持续回血
+                // 持续回血ds
                 p.hp = Math.min(p.hp + stats.lightSpiritHealRate * dt, p.maxHp);
 
                 // 生成光灵球粒子表示存在
@@ -4729,6 +4946,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (p.drag) p.vel = Utils.mult(p.vel, p.drag);
             p.pos = Utils.add(p.pos, Utils.mult(p.vel, dt * 60));
             p.life -= dt;
+            if (p.spin) p.angle = (p.angle || 0) + p.spin;
         });
     };
 
@@ -4752,7 +4970,42 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 maxLife: life,
                 color,
                 size: Math.random() * 4 + 2,
-                drag
+                drag,
+                type: 'circle'
+            });
+        }
+    };
+
+    const spawnShards = (pos: Vector2, count: number, color: string) => {
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 3 + Math.random() * 5;
+            const size = 2 + Math.random() * 4; // [Refine] Much smaller shards (2-6)
+
+            // Random polygon (Triangle)
+            const pts: Vector2[] = [];
+            const segments = 3;
+            for (let j = 0; j < segments; j++) {
+                const a = (j / segments) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+                pts.push({
+                    x: Math.cos(a) * size,
+                    y: Math.sin(a) * size
+                });
+            }
+
+            stateRef.current.particles.push({
+                id: Math.random().toString(),
+                pos: { ...pos },
+                vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
+                life: 0.8 + Math.random() * 0.4,
+                maxLife: 1.2,
+                color: Math.random() > 0.3 ? color : '#ffffff',
+                size,
+                type: 'shard',
+                angle: Math.random() * Math.PI * 2,
+                spin: (Math.random() - 0.5) * 0.3,
+                points: pts,
+                drag: 0.96
             });
         }
     };
@@ -5113,53 +5366,114 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // Particles
             state.particles.forEach(p => {
                 ctx.globalAlpha = p.life / p.maxLife;
-                ctx.fillStyle = p.color;
-                ctx.beginPath();
-                ctx.arc(p.pos.x, p.pos.y, p.size, 0, Math.PI * 2);
-                ctx.fill();
+
+                if (p.type === 'shard' && p.points) {
+                    ctx.save();
+                    ctx.translate(p.pos.x, p.pos.y);
+                    ctx.rotate(p.angle || 0);
+
+                    // Add a glint effect based on time/rotation
+                    const glint = Math.sin(Date.now() / 100 + (parseInt(p.id) || 0)) > 0.8;
+                    ctx.fillStyle = glint ? '#ffffff' : p.color;
+
+                    ctx.beginPath();
+                    ctx.moveTo(p.points[0].x, p.points[0].y);
+                    for (let i = 1; i < p.points.length; i++) {
+                        ctx.lineTo(p.points[i].x, p.points[i].y);
+                    }
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.restore();
+                } else {
+                    ctx.fillStyle = p.color;
+                    ctx.beginPath();
+                    ctx.arc(p.pos.x, p.pos.y, p.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             });
             ctx.globalAlpha = 1;
 
             // Projectiles
             state.projectiles.forEach(p => {
                 if (p.projectileType === 'MAGIC_SPELL' || p.projectileType === 'EXPELLIARMUS') {
-                    // 魔法球专用渲染 - 流星特效
+                    // 魔法球专用渲染 - 闪电/流星拖尾
                     const angle = Math.atan2(p.vel.y, p.vel.x);
                     const speed = Utils.mag(p.vel);
-                    const trailLength = Math.min(100, speed * 8); // Speed-based trail
+                    const trailLength = Math.min(100, speed * 6); // Slightly shorter trail
 
                     ctx.save();
                     ctx.translate(p.pos.x, p.pos.y);
                     ctx.rotate(angle);
 
-                    // 1. Trail (Tail)
-                    const gradient = ctx.createLinearGradient(0, 0, -trailLength, 0);
-                    gradient.addColorStop(0, p.color); // Head color
-                    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)'); // Transparent tail
+                    // 1. Electric Trail (Dynamic Zig-Zag)
+                    const steps = 10;
+                    const startX = 2; // Start closer to center to avoid back-overflow
+                    const stepSize = (trailLength + startX) / steps;
+
+                    const gradient = ctx.createLinearGradient(startX, 0, -trailLength, 0);
+                    gradient.addColorStop(0, '#ffffff');
+                    gradient.addColorStop(0.2, p.color);
+                    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
 
                     ctx.fillStyle = gradient;
+
                     ctx.beginPath();
-                    // Teardrop shape / elongated triangle
-                    ctx.moveTo(8, 0);
-                    ctx.lineTo(-trailLength, -3); // Tapered tail top
-                    ctx.lineTo(-trailLength, 3);  // Tapered tail bottom
+                    ctx.moveTo(startX, 0);
+
+                    // Top Edge (Jagged)
+                    for (let i = 1; i <= steps; i++) {
+                        const x = startX - i * stepSize;
+                        // Thinner width: starts very thin, grows slightly towards middle, then tapers
+                        const widthPct = i / steps;
+                        const width = 0.8 + Math.sin(widthPct * Math.PI) * 1.5;
+                        const jitter = (i < 2) ? 0 : (Math.random() - 0.5) * 4; // No jitter at very start
+                        ctx.lineTo(x, -width + jitter);
+                    }
+
+                    // Bottom Edge (Jagged)
+                    for (let i = steps; i >= 1; i--) {
+                        const x = startX - i * stepSize;
+                        const widthPct = i / steps;
+                        const width = 0.8 + Math.sin(widthPct * Math.PI) * 1.5;
+                        const jitter = (i < 2) ? 0 : (Math.random() - 0.5) * 4;
+                        ctx.lineTo(x, width + jitter);
+                    }
+
                     ctx.closePath();
+
+                    ctx.shadowBlur = 8;
+                    ctx.shadowColor = p.color;
                     ctx.fill();
 
-                    // 2. Glowing Head (Meteor Core)
+                    // 2. Core Streak (Inner lightning bolt)
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(startX, 0);
+                    for (let i = 1; i <= steps; i++) {
+                        const x = startX - i * stepSize;
+                        const jitter = (i < 2) ? 0 : (Math.random() - 0.5) * 3;
+                        ctx.lineTo(x, jitter);
+                    }
+                    ctx.stroke();
+
+                    // 3. Head (Glowing Orb)
                     ctx.shadowBlur = 15;
                     ctx.shadowColor = p.color;
-                    ctx.fillStyle = p.color;
+                    ctx.fillStyle = '#ffffff';
                     ctx.beginPath();
-                    ctx.arc(0, 0, 3, 0, Math.PI * 2);
+                    ctx.arc(0, 0, 4, 0, Math.PI * 2);
                     ctx.fill();
 
-                    // 3. Side Sparkles (Random jitter)
+                    // 4. Side Sparks
                     if (Math.random() < 0.3) {
                         ctx.fillStyle = p.color;
-                        const sparkX = -Math.random() * trailLength * 0.5;
-                        const sparkY = (Math.random() - 0.5) * 10;
-                        ctx.fillRect(sparkX, sparkY, 2, 2);
+                        ctx.globalAlpha = 0.6;
+                        const sparkX = -Math.random() * trailLength * 0.7;
+                        const sparkY = (Math.random() - 0.5) * 15;
+                        const size = 1 + Math.random() * 1.5;
+                        ctx.fillRect(sparkX, sparkY, size, size);
+                        ctx.globalAlpha = 1.0;
                     }
 
                     ctx.restore();
@@ -5550,34 +5864,28 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     return;
                 } else if (p.type === CharacterType.MAGIC) {
                     // --- RENDER MAGIC BALL & WAND ---
-                    // Note: Context is already translated to p.pos by outer loop
 
-                    // 1. Draw Ball Body
                     const statusInfo = getStatusInfo(p);
                     if (statusInfo) ctx.fillStyle = statusInfo.color;
                     else ctx.fillStyle = p.color;
-
 
                     ctx.beginPath();
                     ctx.arc(0, 0, p.radius, 0, Math.PI * 2);
                     ctx.fill();
 
-                    // 2. Draw Gloss (Highlight)
+                    // 2. Draw Gloss
                     ctx.fillStyle = 'rgba(255,255,255,0.2)';
                     ctx.beginPath();
                     ctx.arc(-p.radius / 3, -p.radius / 3, p.radius / 3, 0, Math.PI * 2);
                     ctx.fill();
 
-                    // 3. Draw Wand (Aligned with Aim)
-                    ctx.save(); // Save rotation
-
-                    // Add idle sway
-                    const swayOffset = Math.sin(Date.now() / 800) * 0.15; // Slow breathing sway (~8 deg)
+                    // 3. Draw Wand
+                    ctx.save();
+                    const swayOffset = Math.sin(Date.now() / 800) * 0.15;
                     ctx.rotate(p.aimAngle + swayOffset);
 
                     const wandLen = 32;
-                    // Wand Stick (Branch-like)
-                    ctx.strokeStyle = '#4b3621'; // Dark wood brown
+                    ctx.strokeStyle = '#4b3621';
                     ctx.lineWidth = 4;
                     ctx.lineCap = 'round';
                     ctx.lineJoin = 'round';
@@ -5585,36 +5893,174 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.beginPath();
                     const startX = p.radius - 5;
                     ctx.moveTo(startX, 0);
-
-                    // First segment (slightly up)
                     ctx.lineTo(startX + wandLen * 0.3, -3);
-                    // Second segment (slightly down, subtle Z-shape)
                     ctx.lineTo(startX + wandLen * 0.7, 2);
-                    // Final segment (to tip)
                     ctx.lineTo(startX + wandLen, -1);
                     ctx.stroke();
 
-                    // Draw a small knot or sub-branch for "branch" feel
                     ctx.lineWidth = 2;
                     ctx.beginPath();
                     ctx.moveTo(startX + wandLen * 0.4, -2);
                     ctx.lineTo(startX + wandLen * 0.5, -6);
                     ctx.stroke();
 
-                    // Wand Tip (Glowing Gem/Bud)
-                    // Use the exact current theme color if possible, or fallback
-                    ctx.fillStyle = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e'; // Match projectile colors
+                    ctx.fillStyle = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
                     ctx.shadowColor = ctx.fillStyle;
                     ctx.shadowBlur = 15;
                     ctx.beginPath();
                     ctx.arc(startX + wandLen, -1, 5, 0, Math.PI * 2);
                     ctx.fill();
-                    ctx.shadowBlur = 0; // Reset shadow
+                    ctx.shadowBlur = 0;
 
-                    // Restore rotation
                     ctx.restore();
 
-                    // Restore OUTER context (Translation)
+                    // --- RENDER ARMOR SHIELD (ENHANCED) ---
+                    if ((p.magicShieldHp || 0) > 0) {
+                        const maxShield = CHAR_STATS[CharacterType.MAGIC].armorShieldHp;
+                        const ratio = p.magicShieldHp! / maxShield;
+                        const themeColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
+                        const shieldR = p.radius + 30;
+                        const time = Date.now() / 1000;
+
+                        ctx.save();
+
+                        // [New] Impact Shudder (Shake)
+                        if (p.magicShieldShakeTimer && p.magicShieldShakeTimer > 0) {
+                            const intensity = 4;
+                            const sx = (Math.random() - 0.5) * intensity;
+                            const sy = (Math.random() - 0.5) * intensity;
+                            ctx.translate(sx, sy);
+                        }
+
+                        // 1. Outer Glow
+                        ctx.shadowColor = themeColor;
+                        ctx.shadowBlur = 15 + Math.sin(time * 4) * 5; // Pulsing glow
+
+                        // 2. Shield Body with Radial Gradient
+                        const grad = ctx.createRadialGradient(0, 0, p.radius * 0.5, 0, 0, shieldR);
+                        grad.addColorStop(0, 'rgba(255, 255, 255, 0.1)');
+                        grad.addColorStop(0.7, themeColor + '66'); // ~40% opacity
+                        grad.addColorStop(1, themeColor + '88'); // ~53% opacity
+
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.arc(0, 0, shieldR, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // 3. SOAP BUBBLE LIQUID FLOW (虹彩流光)
+                        ctx.shadowBlur = 0;
+                        ctx.save();
+                        // Use screen composite for additive light effect
+                        ctx.globalCompositeOperation = 'screen';
+
+                        for (let i = 0; i < 4; i++) {
+                            ctx.save();
+                            // Phase-shifted organic movement
+                            const layerTime = time * (0.8 + i * 0.4);
+                            const driftX = Math.sin(layerTime * 0.7 + i) * 10;
+                            const driftY = Math.cos(layerTime * 1.1 + i) * 10;
+                            ctx.translate(driftX, driftY);
+                            ctx.rotate(layerTime * 0.3 + i);
+
+                            // Cycle through HSL colors for iridescence
+                            const hue = (time * 40 + i * 60) % 360;
+                            const color = `hsla(${hue}, 80%, 70%, 0.15)`;
+                            ctx.fillStyle = color;
+
+                            // Organic liquid patches
+                            ctx.beginPath();
+                            const patchR = shieldR * (0.6 + Math.sin(layerTime + i) * 0.2);
+                            ctx.arc(shieldR * 0.2, 0, patchR, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.restore();
+                        }
+
+                        // 4. SURFACE SHIMMER & HIGHLIGHTS (表面反光)
+                        for (let i = 0; i < 2; i++) {
+                            ctx.save();
+                            const reflectTime = time * (1.2 + i);
+                            ctx.rotate(reflectTime * 0.5 + i * Math.PI);
+
+                            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                            ctx.lineWidth = 4 - i * 2;
+                            ctx.lineCap = 'round';
+
+                            ctx.beginPath();
+                            // Moving reflection arcs
+                            ctx.arc(0, 0, shieldR * 0.85, 0, Math.PI * 0.2);
+                            ctx.stroke();
+
+                            ctx.restore();
+                        }
+                        ctx.restore(); // End screen composite
+
+                        // 5. White Rim & Edge highlight
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.arc(0, 0, shieldR, 0, Math.PI * 2);
+                        ctx.stroke();
+
+                        // 6. Progressive Crystalline Cracks (Deterministic & Static)
+                        ctx.globalAlpha = 0.9;
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+                        ctx.lineWidth = 1;
+                        ctx.lineJoin = 'bevel';
+
+                        const crackLimit = shieldR - 5;
+
+                        // Deterministic pseudo-random helper (Based on Player ID/Seed)
+                        const getSeedRandom = (idx: number) => {
+                            const val = Math.sin(idx * 12.9898 + (p.id.length * 78.233)) * 43758.5453;
+                            return val - Math.floor(val);
+                        };
+
+                        const drawStaticCrack = (baseIdx: number, x: number, y: number, size: number) => {
+                            ctx.beginPath();
+                            ctx.moveTo(x, y);
+                            let curX = x;
+                            let curY = y;
+                            // [Refine] Fewer segments but larger step size for better "jaggedness"
+                            for (let i = 0; i < 4; i++) {
+                                const rx = getSeedRandom(baseIdx + i * 1.5) - 0.5;
+                                const ry = getSeedRandom(baseIdx + i * 2.7) - 0.5;
+                                curX += rx * size * 0.8;
+                                curY += ry * size * 0.8;
+                                ctx.lineTo(curX, curY);
+                            }
+                            ctx.stroke();
+                        };
+
+                        if (ratio <= 0.8) {
+                            drawStaticCrack(101, crackLimit * 0.7, -crackLimit * 0.4, 30);
+                            drawStaticCrack(202, -crackLimit * 0.5, crackLimit * 0.6, 25);
+                        }
+                        if (ratio <= 0.6) {
+                            drawStaticCrack(303, crackLimit * 0.2, crackLimit * 0.8, 40);
+                            drawStaticCrack(404, -crackLimit * 0.8, -crackLimit * 0.2, 35);
+                        }
+                        if (ratio <= 0.4) {
+                            drawStaticCrack(505, 0, crackLimit * 0.9, 45);
+                            drawStaticCrack(606, crackLimit * 0.6, 0.4, 40);
+                            drawStaticCrack(707, -crackLimit * 0.4, -crackLimit * 0.7, 35);
+                        }
+                        if (ratio <= 0.2) {
+                            for (let i = 0; i < 3; i++) {
+                                const seed = 800 + i * 111;
+                                const rx = (getSeedRandom(seed) - 0.5) * crackLimit;
+                                const ry = (getSeedRandom(seed + 5) - 0.5) * crackLimit;
+                                drawStaticCrack(seed + 10, rx, ry, 50);
+                            }
+                            // Structural beam link
+                            ctx.beginPath();
+                            ctx.moveTo(-crackLimit * 0.4, -crackLimit * 0.4);
+                            ctx.lineTo(crackLimit * 0.3, crackLimit * 0.3);
+                            ctx.stroke();
+                        }
+
+                        ctx.restore();
+                    }
+
                     ctx.restore();
 
                     if (p.invincibleTimer && p.invincibleTimer > 0) ctx.globalAlpha = 1;
@@ -5624,16 +6070,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // DEFAULT BALL RENDER (For Pyro, Tank, Wukong body)
                 ctx.save(); // [Isolation] Rotate only body features
                 ctx.rotate(p.angle);
-
-                // [Modified] Use unified status color system
-                // This ensures ANY status (Stun, Fear, Silence, etc.) overrides the default color
-                // statusInfo is already defined at start of loop (line ~4882)
-
-                // Special Case: Coach Ball Rainbow Effect overrides standard colors UNLESS it has a status?
-                // User requirement: "for other balls... receive status... correctly change color"
-                // Usually status color > innate color.
-                // But Coach has a special visual. Let's keep Coach special visual as "default" (no status)
-                // and if it has a status, show status color.
 
                 if (statusInfo) {
                     ctx.fillStyle = statusInfo.color;

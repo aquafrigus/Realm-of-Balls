@@ -209,10 +209,11 @@ export const CHAR_STATS = {
     expelliarmusDuration: 5000,
     expelliarmusCooldown: 5000,
     // 《盔甲护身》: 护盾500HP, 持续5秒, CD 7秒
-    armorShieldHp: 500,
+    armorShieldHp: 2000,
     armorDuration: 5000,
     armorCooldown: 7000,
     // 《移形换影》: 解除控制+闪现, CD 9秒
+    blinkManaCost: 100,
     blinkCooldown: 9000,
 
     // Ultimate - Skill Cooldown
@@ -227,6 +228,23 @@ export const CHAR_STATS = {
     // 《阿瓦达啃大瓜》(黑): 蓄力贯穿光束
     avadaMaxDamage: 2500,      // 最大伤害(需低血量+高MP)
     avadaMpDrainRate: 80,      // 蓄力时MP消耗速度/秒
+  }
+};
+
+export const DEFAULT_HAZARD_AFFINITY = {
+  SKILL: 1,
+  WATER: 0,
+  MAGMA: 0,
+  WALL: 0,
+};
+
+export const HAZARD_AFFINITY: Partial<Record<CharacterType, Partial<typeof DEFAULT_HAZARD_AFFINITY>>> = {
+  [CharacterType.PYRO]: {
+    MAGMA: -1,  // Beneficial (Safe/Preferred)
+  },
+  [CharacterType.MAGIC]: {
+    WALL: -0.5,    // Safe spot preference (Blink can land here)
+    WATER: 0.1    // Slight penalty to avoid landing in water if possible
   }
 };
 

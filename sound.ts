@@ -142,7 +142,7 @@ class SoundManager {
         }
     }
 
-    playSkill(type: 'MAGMA_THROW' | 'MAGMA_LAND' | 'MAGMA_EXPLODE' | 'SWITCH' | 'RELOAD' | 'CHARGE_START' | 'SMASH_HIT' | 'THRUST' | 'SCOOPER_WARNING') {
+    playSkill(type: 'MAGMA_THROW' | 'MAGMA_LAND' | 'MAGMA_EXPLODE' | 'SWITCH' | 'RELOAD' | 'CHARGE_START' | 'SMASH_HIT' | 'THRUST' | 'SCOOPER_WARNING' | 'SHIELD_ACTIVATE' | 'SHIELD_CRACK' | 'SHIELD_SHATTER' | 'BLINK') {
         this.init();
         if (!this.ctx) return;
         if (type === 'MAGMA_THROW') {
@@ -175,6 +175,22 @@ class SoundManager {
             this.createOsc('sawtooth', 400, 0.2, 0.2, 100);
         } else if (type === 'SCOOPER_WARNING') {
             this.createOsc('square', 600, 0.3, 0.1, 1200);
+        } else if (type === 'SHIELD_ACTIVATE') {
+            // "Bo" (啵) - Quick bubbly pop/upward sweep
+            this.createOsc('sine', 400, 0.1, 0.4, 1200);
+            this.createNoise(0.05, 0.1, 2000, 'highpass');
+        } else if (type === 'SHIELD_CRACK') {
+            // "Ka" (咔) - Sharp crystalline snap
+            this.createOsc('sawtooth', 1600, 0.04, 0.3, 400);
+            this.createNoise(0.04, 0.2, 3000, 'highpass');
+        } else if (type === 'SHIELD_SHATTER') {
+            // "Peng" (砰) - Heavy explosive thud
+            this.createOsc('sine', 120, 0.4, 0.7, 10);
+            this.createNoise(0.5, 0.6, 400, 'lowpass');
+        } else if (type === 'BLINK') {
+            // "Pew/Whoosh" - Rapid movement
+            this.createOsc('sine', 800, 0.15, 0.3, 200); // Frequency drop = Doppler-ish
+            this.createNoise(0.15, 0.2, 3000, 'highpass');
         }
     }
 

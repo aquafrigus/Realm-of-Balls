@@ -183,6 +183,8 @@ export interface PlayerState extends GameEntity {
   magicUltChargeTime?: number;    // 蓄力时间
   magicChargeTimer?: number;      // 普攻连续使用计时
   ccImmuneTimer?: number;         // 控制免疫计时器
+  magicShieldShakeTimer?: number;  // 护盾受击抖动计时器
+  magicShieldDamageLevel?: number; // 护盾破损等级 (0-4)
 
   // AI specific
   lastPos?: Vector2;
@@ -237,6 +239,20 @@ export interface GroundEffect {
   damageType?: DamageType;
 }
 
+export interface DangerZone {
+  type: 'CIRCLE' | 'RECT';
+  hazardType: 'SKILL' | 'WATER' | 'MAGMA' | 'WALL' | 'MAP_EDGE';
+  timeLeft: number; // Time until impact or remaining duration (seconds). Use a high value for permanent hazards.
+  weight?: number;  // Danger weight (e.g. 1.0 = standard, 2.0 = critical, -1.0 = preferred)
+  // Circle
+  center?: Vector2;
+  radius?: number;
+  // Rect (Capsule-like for beams/thrusts)
+  p1?: Vector2;
+  p2?: Vector2;
+  width?: number; // Total width (diameter)
+}
+
 export interface Particle {
   id: string;
   pos: Vector2;
@@ -246,6 +262,10 @@ export interface Particle {
   color: string;
   size: number;
   drag?: number; // Added for deceleration (Steam effect)
+  type?: 'circle' | 'shard';
+  angle?: number;
+  spin?: number;
+  points?: Vector2[];
 }
 
 export interface Obstacle {
