@@ -5412,9 +5412,90 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // Obstacles (Sorted by priority for correct layering)
             [...state.obstacles].sort((a, b) => (a.priority || 0) - (b.priority || 0)).forEach(obs => {
                 if (obs.type === 'WATER') {
-                    ctx.fillStyle = 'rgba(6, 182, 212, 0.3)';
+                    // 1. Base Water Color
+                    ctx.fillStyle = 'rgba(6, 182, 212, 0.45)';
                     ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
-                    ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
+
+                    // 2. Internal Shimmer/Sparkles
+                    const time = Date.now() / 1000;
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(obs.x, obs.y, obs.width, obs.height);
+                    ctx.clip();
+
+                    // A. Wave/Flow Undercurrent (Organic, staggered movement)
+                    ctx.globalCompositeOperation = 'screen';
+
+                    const waveSize = 450; // Vastly larger wave areas
+                    const cols = Math.ceil(obs.width / waveSize) + 1;
+                    const rows = Math.ceil(obs.height / waveSize) + 1;
+
+                    for (let i = 0; i < 2; i++) {
+                        const waveTime = time * (0.08 + i * 0.03); // Even slower for majestic feel
+                        const driftX = Math.sin(waveTime * 0.45) * 45;
+                        const driftY = Math.cos(waveTime * 0.35) * 45;
+                        ctx.fillStyle = `rgba(165, 243, 252, ${0.05 - i * 0.02})`;
+
+                        for (let c = -1; c <= cols; c++) {
+                            for (let r = -1; r <= rows; r++) {
+                                const sx = obs.x + c * waveSize;
+                                const sy = obs.y + r * waveSize;
+                                const cellSeed = Math.sin(c * 12.9898 + r * 78.233) * 43758.5453;
+                                const r1 = cellSeed - Math.floor(cellSeed);
+                                const r2 = (cellSeed * 1.5) - Math.floor(cellSeed * 1.5);
+
+                                // Skip 60% of ripples to ensure they are sparse and rare
+                                if (r1 < 0.6) continue;
+
+                                const wx = sx + r1 * waveSize * 0.8;
+                                const wy = sy + r2 * waveSize * 0.8;
+
+                                const wavePhase = (c * 0.9) + (r * 0.5) + (r2 * 12);
+                                const wavePulse = Math.sin(waveTime + wavePhase) * 35;
+                                const radius = (waveSize * 0.4) + (r1 * 60) + wavePulse;
+
+                                ctx.beginPath();
+                                ctx.arc(wx + driftX, wy + driftY, radius, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                        }
+                    }
+
+                    // B. Sparkles (Rarer, slower glints)
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.fillStyle = '#ffffff';
+
+                    const sparkleDensity = 170; // Even sparser
+                    for (let sx = obs.x; sx < obs.x + obs.width; sx += sparkleDensity) {
+                        for (let sy = obs.y; sy < obs.y + obs.height; sy += sparkleDensity) {
+                            const seed = Math.sin(sx * 12.9898 + sy * 78.233) * 43758.5453;
+                            const rand1 = seed - Math.floor(seed);
+                            const rand2 = (seed * 1.5) - Math.floor(seed * 1.5);
+
+                            const blinkSpeed = 0.3 + rand1 * 0.4; // Very slow blinking
+                            const phase = rand2 * Math.PI * 2;
+
+                            const val = Math.sin(time * blinkSpeed + phase);
+                            // Extremely tight threshold for very rare glints
+                            if (val > 0.985) {
+                                const alpha = (val - 0.985) / 0.015;
+                                ctx.globalAlpha = alpha * 0.6;
+
+                                const size = 1.0 + rand1 * 2.5;
+                                const pX = sx + (rand2 * sparkleDensity);
+                                const pY = sy + (rand1 * sparkleDensity);
+
+                                ctx.beginPath();
+                                ctx.arc(pX, pY, size, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                        }
+                    }
+
+                    ctx.restore();
+
+                    // 3. Border
+                    ctx.strokeStyle = 'rgba(6, 182, 212, 0.7)';
                     ctx.lineWidth = 2;
                     ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
                 } else if (obs.type === 'LAVA') {
