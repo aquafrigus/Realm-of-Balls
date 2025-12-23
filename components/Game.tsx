@@ -187,15 +187,27 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             });
         }
 
-        // [New] Generate 1 Large Lava Pool (Test)
-        const lavaW = 400 + Math.random() * 200;
-        const lavaH = 400 + Math.random() * 200;
+        // [Modified] Generate 1 Medium & 1 Small Lava Pool
+        const medLavaW = 250 + Math.random() * 150;
+        const medLavaH = 250 + Math.random() * 150;
         obs.push({
-            id: 'lava-large',
-            x: Math.random() * (MAP_SIZE.width - lavaW),
-            y: Math.random() * (MAP_SIZE.height - lavaH),
-            width: lavaW,
-            height: lavaH,
+            id: 'lava-medium',
+            x: Math.random() * (MAP_SIZE.width - medLavaW),
+            y: Math.random() * (MAP_SIZE.height - medLavaH),
+            width: medLavaW,
+            height: medLavaH,
+            type: 'LAVA',
+            priority: 0
+        });
+
+        const smLavaW = 120 + Math.random() * 80;
+        const smLavaH = 120 + Math.random() * 80;
+        obs.push({
+            id: 'lava-small',
+            x: Math.random() * (MAP_SIZE.width - smLavaW),
+            y: Math.random() * (MAP_SIZE.height - smLavaH),
+            width: smLavaW,
+            height: smLavaH,
             type: 'LAVA',
             priority: 0
         });
@@ -239,9 +251,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
         // [新增] 按渲染顺序分配唯一优先级 (索引越大，优先级越高，渲染在越上层)
-        // 同时保留类型权重：WALL 基础 +100，WATER/LAVA 基础 +0
+        // [修改] 明确优先级层次：WATER(0+) < LAVA(100+) < WALL(200+)
         obs.forEach((o, idx) => {
-            const typeWeight = o.type === 'WALL' ? 100 : 0;
+            let typeWeight = 0;
+            if (o.type === 'LAVA') typeWeight = 100;
+            else if (o.type === 'WALL') typeWeight = 200;
             o.priority = typeWeight + idx;
         });
 
@@ -968,6 +982,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const bonusFuel = CHAR_STATS[CharacterType.PYRO].fuelRegenMagma * dt;
             p.fuel = Math.min(p.maxFuel, p.fuel + bonusFuel);
 
+
             // Immunity is handled implicitly by NOT applying negative effects below
             return;
         }
@@ -986,9 +1001,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (!sourceId || sourceId === 'LAVA') {
             applyStatus(p, 'burst', 0.1, 'LAVA');
         }
-
-        // C. Velocity Penalty
-        p.vel = Utils.mult(p.vel, 0.90);
     };
 
     const applyStatus = (target: PlayerState | Drone | any, type: string, duration: number, sourceId?: string, pos?: Vector2) => {
@@ -1001,8 +1013,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
         }
 
-        // Pyro Fire Immunities
-        if (target.type === CharacterType.PYRO) {
+        // Fire Immunities (Pyro or Wet targets)
+        if (target.type === CharacterType.PYRO || target.isWet) {
             const fireStatuses = ['burn', 'burst'];
             if (fireStatuses.includes(type)) {
                 return;
@@ -1112,7 +1124,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // [New] Wet Status Logic (Cleansing)
         if (type === 'wet') {
-            const hasFire = (target.burnTimer > 0) || ((target.flameExposure || 0) > 0);
+            const hasFire = (target.burnTimer > 0) || ((target.flameExposure || 0) > 0) || target.type === CharacterType.PYRO;
 
             // 1. Extinguish Burn
             if (target.burnTimer > 0) {
@@ -2324,7 +2336,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 // 眩晕所有命中的球
                 applyStatus(target, 'stun', 2.0);
-                target.slowTimer = 1.5;
+                applyStatus(target, 'slow', 2.5);
 
                 // 打断施法效果 (使用统一的interruptAction)
                 interruptAction(target);
@@ -2651,14 +2663,14 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 (p1.tauntTimer || 0) > 0 ||
                 (p1.charmTimer || 0) > 0;
 
-            // [新增] 先确定玩家当前所站的最高优先级地形
+            // [Restored] Determine highest priority terrain currently standing on
             const standingOnZones = state.obstacles.filter(obs => {
                 return p1.pos.x >= obs.x && p1.pos.x <= obs.x + obs.width &&
                     p1.pos.y >= obs.y && p1.pos.y <= obs.y + obs.height;
             });
             const currentStandingPriority = standingOnZones.length > 0
                 ? Math.max(...standingOnZones.map(o => o.priority ?? 0))
-                : -1; // 不在任何地形上
+                : -1; // Not on any terrain
 
             // 1. 物理阻挡 (刚体碰撞)
             const activeCollisions: { obs: Obstacle, col: any, priority: number }[] = [];
@@ -2689,7 +2701,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // Cat 特性：飞扑无视地形
                 if (p1.type === CharacterType.CAT && p1.isPouncing) return;
 
-                // [新增] 如果玩家站在更高优先级的地形上，忽略此障碍物 (爬山逻辑)
+                // [Restored] Priority skipping logic needed to allow movement ON walls/islands over water.
                 const obsPriority = obs.priority ?? 0;
                 if (obsPriority < currentStandingPriority) return;
 
@@ -2774,9 +2786,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const wasWet = p1.isWet;
             // Become/Stay Wet if:
             // 1. Center is inside water (Deep)
-            // 2. Already Wet AND Still Touching (Sticky - prevents popping out at edge)
-            // 3. Forced AND Touching (Shallow Entry Support)
-            const shouldBeWet = isCenterInWater || (wasWet && isTouchingWater) || (isForced && isTouchingWater);
+            // 2. Already Wet AND Still Touching AND (No other higher priority terrain) (Sticky)
+            // 3. Forced AND Touching AND (No other higher priority terrain) (Entry)
+            const shouldBeWet = isCenterInWater || ((wasWet || isForced) && isTouchingWater && (!topTerrain || topTerrain.type === 'WATER'));
 
             p1.isWet = shouldBeWet && !p1.isPouncing;
 
@@ -2791,12 +2803,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 obs.type === 'LAVA' && Utils.checkCircleRectCollision(p1.pos, p1.radius, obs).collided
             );
 
-            const wasBurning = p1.burnTimer > 0;
+            const wasBurning = p1.burnTimer > 0 || (p1.flameExposure || 0) > 0;
             // Sticky logic for Lava:
             // 1. Center in Lava
-            // 2. Already Burning AND Touching (Sticky)
-            // 3. Forced AND Touching (Entry)
-            const shouldBeInLava = isCenterInLava || (wasBurning && isTouchingLava) || (isForced && isTouchingLava);
+            // 2. Already Ignited AND Touching AND (No other higher priority terrain) (Sticky)
+            // 3. Forced AND Touching AND (No other higher priority terrain) (Entry)
+            const shouldBeInLava = isCenterInLava || ((wasBurning || isForced) && isTouchingLava && (!topTerrain || topTerrain.type === 'LAVA'));
 
             if (shouldBeInLava && !p1.isPouncing) {
                 // [Unified] Trigger Magma Interaction (Handles Damage, Burn, Slow, Burst, etc.)
@@ -3031,14 +3043,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const handlePlayerInput = (p: PlayerState, dt: number) => {
-        // 完全硬控状态 - 立即返回，不处理任何输入
-        if (isControlled(p)) {
-            p.vel = Utils.mult(p.vel, 0.8);
-            return;
-        }
-
-        // [优先级系统] 恐惧 > 嘲讽 > 魅惑
-        // 恐惧优先：强制反向移动 (远离敌人)
+        // [Priority System] Fear > Taunt > Charm
+        // These forced movements must happen BEFORE the isControlled early return,
+        // because they are technically "control" effects themselves but require movement processing.
         if ((p.fearTimer || 0) > 0) {
             const enemy = getNearestEnemy(p);
             if (enemy) {
@@ -3050,11 +3057,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             return;
         }
 
-        // 嘲讽次之，魅惑最后
-        // Taunt / Charm: Forced Movement logic (嘲讽优先于魅惑)
+        // Taunt / Charm: Forced Movement logic
         let tauntTarget: PlayerState | null = null;
         const isTaunted = (p.tauntTimer || 0) > 0;
-        const isCharmed = (p.charmTimer || 0) > 0 && !isTaunted; // 嘲讽时忽略魅惑
+        const isCharmed = (p.charmTimer || 0) > 0 && !isTaunted;
 
         if (isTaunted || isCharmed) {
             if (isTaunted && p.tauntSourceId) {
@@ -3063,38 +3069,24 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
             if (!tauntTarget) tauntTarget = getNearestEnemy(p);
 
-            // [Refined Taunt Logic]
             if (tauntTarget) {
                 const distToTarget = Utils.dist(p.pos, tauntTarget.pos);
-                let attackRange = 100; // default
-
-                // Determine effective attack range based on character
+                let attackRange = 100;
                 if (p.type === CharacterType.PYRO) attackRange = CHAR_STATS.PYRO.flamethrowerRange - 50;
-                else if (p.type === CharacterType.WUKONG) attackRange = 120; // Combo range
+                else if (p.type === CharacterType.WUKONG) attackRange = 120;
                 else if (p.type === CharacterType.CAT) attackRange = CHAR_STATS.CAT.scratchRange + 20;
                 else if (p.type === CharacterType.MAGIC) attackRange = CHAR_STATS.MAGIC.curseRange - 50;
-                else if (p.type === CharacterType.TANK) {
-                    attackRange = p.tankMode === TankMode.ARTILLERY ? 400 : 300;
-                }
+                else if (p.type === CharacterType.TANK) attackRange = p.tankMode === TankMode.ARTILLERY ? 400 : 300;
 
                 if (isCharmed || distToTarget > attackRange) {
-                    // Rush / Move towards target
                     const runDir = Utils.normalize(Utils.sub(tauntTarget.pos, p.pos));
-                    // Forced move speed (Charm: 50%, Taunt: 120%)
                     const speedFactor = isCharmed ? 0.5 : 1.2;
                     const forceSpeed = CHAR_STATS[p.type].speed * speedFactor;
-
                     p.vel = Utils.add(p.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * forceSpeed * dt * 60));
-                    p.angle = Math.atan2(runDir.y, runDir.x);
-
-                    // Taunt: Force Aim but NO Attack while rushing
-                    if (!isCharmed) {
-                        p.aimAngle = p.angle;
-                    }
-                }
-                else if (!isCharmed && distToTarget <= attackRange) {
-                    // Taunt & Close: STOP and ATTACK
-                    p.vel = Utils.mult(p.vel, 0.8); // Friction
+                    p.aimAngle = Math.atan2(runDir.y, runDir.x);
+                    p.angle = p.aimAngle;
+                } else if (!isCharmed) {
+                    p.vel = Utils.mult(p.vel, 0.8);
                     const aimDir = Utils.sub(tauntTarget.pos, p.pos);
                     p.aimAngle = Math.atan2(aimDir.y, aimDir.x);
                     p.angle = p.aimAngle;
@@ -3117,21 +3109,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         } else {
                             p.isFiringFlamethrower = false;
                         }
-                    }
-                    else if (p.type === CharacterType.WUKONG) {
-                        // Force Left Click Combo
+                    } else if (p.type === CharacterType.WUKONG) {
                         handleWukongCombo(p);
-                    }
-                    else if (p.type === CharacterType.CAT) {
-                        // Force Scratch
+                    } else if (p.type === CharacterType.CAT) {
                         handleCatScratch(p);
-                    }
-                    else if (p.type === CharacterType.MAGIC) {
-                        // Force Curse
+                    } else if (p.type === CharacterType.MAGIC) {
                         handleMagicCurse(p, tauntTarget.pos);
-                    }
-                    else if (p.type === CharacterType.TANK) {
-                        // Tank Attack
+                    } else if (p.type === CharacterType.TANK) {
                         if (p.attackCooldown <= 0) {
                             if (p.tankMode === TankMode.ARTILLERY) {
                                 if (p.artilleryAmmo >= 1 && distToTarget > CHAR_STATS.TANK.artilleryMinRange) {
@@ -3155,8 +3139,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
                 }
             }
+            return; // Taunt/Charm overrides normal input
+        }
 
-            // Return early to prevent ANY other input processing (Movement, Skills, etc.)
+        // Hard CC Check (Stun, Sleep, Petrify) - Return early, no input allowed
+        if (isControlled(p)) {
+            p.vel = Utils.mult(p.vel, 0.8);
             return;
         }
 
@@ -4263,8 +4251,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (e.hp <= 0) killEntity(e, p.id); // [新增] 召唤物死亡处理
                         if (Math.random() < 0.2) spawnParticles(e.pos, 1, '#ef4444', 2, 0.5);
                     } else {
-                        // Pyro is immune to fire statuses and exposure
-                        if (e.type !== CharacterType.PYRO) {
+                        // Pyro and Wet targets are immune to fire statuses and exposure
+                        if (e.type !== CharacterType.PYRO && !e.isWet) {
                             const prevExposure = e.flameExposure || 0;
                             e.flameExposure = Math.min(100, (e.flameExposure || 0) + 0.5);
 
@@ -4400,18 +4388,24 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             // --- 碰撞与逻辑 ---
             if (p.projectileType === 'MAGMA_PROJ') {
-                // Check if hitting existing Magma Pool -> Chain Reaction
-                const hitPool = state.groundEffects.find(g =>
-                    g.type === 'MAGMA_POOL' &&
-                    Utils.dist(p.pos, g.pos) < g.radius + p.radius
-                );
-
-                if (hitPool || p.life <= 0) {
+                // Modified: Only check for overlaps/detonation when the projectile LANDS
+                if (p.life <= 0) {
                     p.life = 0; // Destroy projectile
 
-                    if (hitPool) {
-                        // Chain Reaction: Detonate owner's pools (or all pools if simplified logic)
-                        // Using the owner of the projectile to trigger detonation
+                    // 1. Check if landing on existing Magma Pool
+                    const hitPool = state.groundEffects.find(g =>
+                        g.type === 'MAGMA_POOL' &&
+                        Utils.dist(p.pos, g.pos) < g.radius + p.radius
+                    );
+
+                    // 2. Check if landing on Lava Terrain
+                    const hitLava = state.obstacles.some(obs =>
+                        obs.type === 'LAVA' &&
+                        Utils.checkCircleRectCollision(p.pos, p.radius, obs).collided
+                    );
+
+                    if (hitPool || hitLava) {
+                        // Chain Reaction: Detonate owner's pools
                         const owner = state.players.find(pl => pl.id === p.ownerId);
                         if (owner) detonateMagmaPools(owner);
                     } else {
@@ -5375,8 +5369,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             for (let y = 0; y <= MAP_SIZE.height; y += 100) { ctx.moveTo(0, y); ctx.lineTo(MAP_SIZE.width, y); }
             ctx.stroke();
 
-            // Obstacles
-            state.obstacles.forEach(obs => {
+            // Obstacles (Sorted by priority for correct layering)
+            [...state.obstacles].sort((a, b) => (a.priority || 0) - (b.priority || 0)).forEach(obs => {
                 if (obs.type === 'WATER') {
                     ctx.fillStyle = 'rgba(6, 182, 212, 0.3)';
                     ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
