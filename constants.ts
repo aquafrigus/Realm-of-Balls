@@ -74,7 +74,6 @@ export const CHAR_STATS = {
     fuelRegenMagma: 24,       // 岩浆池内额外恢复
     burnoutRegen: 30,         // 燃尽期恢复速度（比正常慢）
     magmaHealRate: 50,        // 岩浆池内回血速度（HP/秒）- 降低以加快内战节奏
-    pyroDamageMultiplier: 1.0, // 火焰球对火焰球伤害倍率（已取消增幅）
 
     color: '#ef4444',
     uiThemeColor: 'red',
@@ -253,6 +252,9 @@ export const HAZARD_AFFINITY: Partial<Record<CharacterType, Partial<typeof DEFAU
   [CharacterType.MAGIC]: {
     WALL: -0.5,    // Safe spot preference (Blink can land here)
     WATER: 0.1    // Slight penalty to avoid landing in water if possible
+  },
+  [CharacterType.CAT]: {
+    MAGMA: 1,
   }
 };
 

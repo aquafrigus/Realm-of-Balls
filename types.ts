@@ -197,9 +197,11 @@ export interface PlayerState extends GameEntity {
   burstTimer?: number;
   aiHissTimer?: number;
   aiHissDelay?: number;
-  aiIsEvading?: boolean;
-  aiEvasionDir?: Vector2;
-  aiEvasionTimer?: number;
+  aiIsEscapingHazard?: boolean;
+  aiHazardEscapeDir?: Vector2;
+  aiHazardEscapeTimer?: number;
+  aiTacticalRetreatDir?: Vector2;
+  aiTacticalRetreatTimer?: number;
   forcedMoveTimer?: number; // [New] Track if being knocked back
   aimLockTimer?: number; // [New] Lock aim angle for auto-aim skills
 

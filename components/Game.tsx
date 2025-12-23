@@ -460,23 +460,33 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             });
         }
 
-        // 4. Magma Hazards (Note: Magma地形目前尚未在obstacles中定义，这里预留接口)
-        const magmaWeight = affinity.MAGMA ?? 0; // Default to 0 until terrain exists
+        // 4. Magma Hazards (Lava Terrain & Magma Pools)
+        const magmaWeight = affinity.MAGMA ?? 0;
         if (magmaWeight !== 0) {
-            // Future: state.obstacles.filter(obs => obs.type === 'MAGMA')...
-            // 特殊逻辑：Pyro Ball 在 Magma Pool 中获得负权重（安全/吸引）
-            if (entity.type === CharacterType.PYRO) {
-                state.groundEffects.filter(eff => eff.type === 'MAGMA_POOL').forEach(pool => {
-                    dangerZones.push({
-                        type: 'CIRCLE',
-                        hazardType: 'MAGMA',
-                        center: pool.pos,
-                        radius: pool.radius,
-                        timeLeft: pool.life,
-                        weight: magmaWeight
-                    });
+            // A. Environmental Lava (LAVA Obstacles)
+            state.obstacles.filter(obs => obs.type === 'LAVA').forEach(lava => {
+                dangerZones.push({
+                    type: 'RECT',
+                    hazardType: 'MAGMA',
+                    p1: { x: lava.x, y: lava.y + lava.height / 2 },
+                    p2: { x: lava.x + lava.width, y: lava.y + lava.height / 2 },
+                    width: lava.height,
+                    timeLeft: 99, // Permanent terrain
+                    weight: magmaWeight
                 });
-            }
+            });
+
+            // B. Skill Magma Pools
+            state.groundEffects.filter(eff => eff.type === 'MAGMA_POOL').forEach(pool => {
+                dangerZones.push({
+                    type: 'CIRCLE',
+                    hazardType: 'MAGMA',
+                    center: pool.pos,
+                    radius: pool.radius,
+                    timeLeft: pool.life,
+                    weight: magmaWeight
+                });
+            });
         }
 
         // 5. Walls (Obstacles)
@@ -941,12 +951,60 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Future characters can be added here
     };
 
+    // [New] Centralized Magma Interaction Helper
+    // Handles both Magma Pools (Skill) and Environmental Lava (Terrain), collectively "Magma"
+    const handleMagmaInteraction = (p: PlayerState, dt: number, sourceId?: string) => {
+        // [New] Stacking Protection: Only process once per frame per player
+        if ((p as any).hasProcessedMagma) return;
+        (p as any).hasProcessedMagma = true;
+
+        // 1. Pyro Affinity Logic (Beneficial)
+        if (p.type === CharacterType.PYRO) {
+            // Heal
+            const healRate = CHAR_STATS[CharacterType.PYRO].magmaHealRate;
+            if (p.hp < p.maxHp) p.hp += healRate * dt;
+
+            // Refuel 增加岩浆带来的额外燃料回复 (与其基础回复叠加)
+            const bonusFuel = CHAR_STATS[CharacterType.PYRO].fuelRegenMagma * dt;
+            p.fuel = Math.min(p.maxFuel, p.fuel + bonusFuel);
+
+            // Immunity is handled implicitly by NOT applying negative effects below
+            return;
+        }
+
+        // 2. Non-Pyro Logic (Harmful)
+        // A. Constant Damage
+        takeDamage(p, 10 * dt, CharacterType.ENVIRONMENT, DamageType.FIRE);
+
+        // B. Apply Statuses
+        // Refreshed every frame while inside Magma
+        applyStatus(p, 'burn', 1.0, sourceId || 'LAVA');
+        applyStatus(p, 'slow', 1.0, sourceId || 'LAVA');
+
+        // Burst (Ignition effect) is only applied for Environmental Lava (Terrain)
+        // or during Magma Pool Detonation (handled in detonateMagmaPools)
+        if (!sourceId || sourceId === 'LAVA') {
+            applyStatus(p, 'burst', 0.1, 'LAVA');
+        }
+
+        // C. Velocity Penalty
+        p.vel = Utils.mult(p.vel, 0.90);
+    };
+
     const applyStatus = (target: PlayerState | Drone | any, type: string, duration: number, sourceId?: string, pos?: Vector2) => {
         // Mechanical Immunities
         if (isMechanical(target)) {
             // Immutable list of statuses that machines are immune to
             const immuneStatuses = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
             if (immuneStatuses.includes(type)) {
+                return;
+            }
+        }
+
+        // Pyro Fire Immunities
+        if (target.type === CharacterType.PYRO) {
+            const fireStatuses = ['burn', 'burst'];
+            if (fireStatuses.includes(type)) {
                 return;
             }
         }
@@ -1054,6 +1112,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // [New] Wet Status Logic (Cleansing)
         if (type === 'wet') {
+            const hasFire = (target.burnTimer > 0) || ((target.flameExposure || 0) > 0);
+
             // 1. Extinguish Burn
             if (target.burnTimer > 0) {
                 target.burnTimer = 0;
@@ -1063,9 +1123,35 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 target.sleepTimer = 0;
                 target.statusLabel = "惊醒!";
             }
-            // 3. Wash off Flame Exposure (Prevent Vaporize/Combustion buildup)
+            // 3. Wash off Flame Exposure
             if (target.flameExposure > 0) {
                 target.flameExposure = 0;
+            }
+
+            // [New] Elegant Steam Sizzle Visual & Sound
+            if (hasFire) {
+                const count = 20;
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = Math.random() * target.radius;
+                    stateRef.current.particles.push({
+                        id: Math.random().toString(),
+                        pos: {
+                            x: target.pos.x + Math.cos(angle) * dist,
+                            y: target.pos.y + Math.sin(angle) * dist
+                        },
+                        vel: {
+                            x: (Math.random() - 0.5) * 4,
+                            y: -3 - Math.random() * 5 // Strong upward burst
+                        },
+                        life: 0.6 + Math.random() * 0.6,
+                        maxLife: 1.2,
+                        color: 'rgba(241, 245, 249, 0.75)', // Elegant steam white
+                        size: 6 + Math.random() * 12, // Large soft particles
+                        drag: 0.91 // High air resistance for "soft" dissipation
+                    });
+                }
+                Sound.playSkill('MAGMA_LAND'); // Sizzle/Splash sound
             }
         }
 
@@ -2344,28 +2430,32 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             finalDmg *= 0.1;
         }
 
-        // Water Resistance vs Fire
-        if (p.isWet && damageType === DamageType.FIRE) {
-            finalDmg *= 0.5;
-        }
-
         // [New] Centralized Fire Damage Modifiers
         if (damageType === DamageType.FIRE) {
-            // 1. Fire Vulnerability (flameExposure / Combust)
+            // 1. Environmental: Water Resistance
+            if (p.isWet) {
+                finalDmg *= 0.5;
+            }
+
+            // 2. Status: Fire Vulnerability (flameExposure / burst)
             const rampMult = 1 + ((p.flameExposure || 0) / 35);
             finalDmg *= rampMult;
 
-            // 2. Pyro vs Pyro internal damage scale
-            if (p.type === CharacterType.PYRO && sourceType === CharacterType.PYRO) {
-                const pyroMult = CHAR_STATS[CharacterType.PYRO].pyroDamageMultiplier || 1;
-                finalDmg *= pyroMult;
+            // 3. Character: Specific Resistances
+            if (p.type === CharacterType.PYRO) {
+                finalDmg *= 0.5; // Pyro Resistance (50% reduction)
+            } else if (p.type === CharacterType.WUKONG) {
+                finalDmg *= 0.7; // Wukong Resistance (30% reduction)
             }
         }
 
-        // Wukong Fire Resistance (30% reduction)
-        if (p.type === CharacterType.WUKONG && damageType === DamageType.FIRE) {
-            finalDmg *= 0.7;
+        // [New] Water Damage Modifiers
+        if (damageType === DamageType.WATER) {
+            if (p.type === CharacterType.PYRO) {
+                finalDmg *= 1.5; // Pyro Vulnerability to Water (50% extra)
+            }
         }
+
 
         // --- Magic Shield Absorption ---
         if ((p.magicShieldHp || 0) > 0 && finalDmg > 0) {
@@ -2418,8 +2508,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Allow physics/logic to run during VICTORY/DEFEAT for cool endings/spectating
         if (state.gameStatus === 'PAUSED') return;
 
-        // 1. [新增] 遍历所有玩家进行死亡判定
+        // 1. [新增] 遍历所有玩家进行状态重置与死亡判定
         state.players.forEach(entity => {
+            // [New] Reset per-frame flags for unification logic
+            (entity as any).hasProcessedMagma = false;
+
             if (entity.hp <= 0 && !entity.isDead) {
                 // 教练球特殊复活
                 if (entity.type === CharacterType.COACH) {
@@ -2583,10 +2676,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 // Lava Logic (Copy of Water)
                 if (obs.type === 'LAVA') {
-                    if (p1.type === CharacterType.WUKONG) return;
+                    // Entry Rules Only - Interactions moved to Terrain Status Phase below
+                    if (p1.type === CharacterType.WUKONG || p1.type === CharacterType.PYRO) return;
 
                     // Allow entering lava if Forced OR already Burning (Sticky)
-                    // (Similar to "Wet" stickiness for water)
                     if (isForced || (p1.burnTimer > 0)) return;
                 }
 
@@ -2706,11 +2799,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const shouldBeInLava = isCenterInLava || (wasBurning && isTouchingLava) || (isForced && isTouchingLava);
 
             if (shouldBeInLava && !p1.isPouncing) {
-                // 1. Apply Burn (Continuous refresh)
-                applyStatus(p1, 'burn', 0.5, 'LAVA');
+                // [Unified] Trigger Magma Interaction (Handles Damage, Burn, Slow, Burst, etc.)
+                handleMagmaInteraction(p1, deltaTime);
 
-                // 2. Apply Burst (Combined visuals/mechanics)
-                applyStatus(p1, 'burst', 0, 'LAVA');
+                // [New] Lava Visuals: Bubbles/Sparks from current terrain
+                if (Math.random() < 0.05) {
+                    const offset = { x: (Math.random() - 0.5) * (topTerrain?.width || 0), y: (Math.random() - 0.5) * (topTerrain?.height || 0) };
+                    const particlePos = { x: (topTerrain?.x || 0) + (topTerrain?.width || 0) / 2 + offset.x, y: (topTerrain?.y || 0) + (topTerrain?.height || 0) / 2 + offset.y };
+                    spawnParticles(particlePos, 1, '#ef4444', 0.5, 0.5);
+                }
             }
 
             // 玩家间碰撞 (Player vs Player) - 双重循环
@@ -3454,23 +3551,20 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Hysteresis Logic
         if (isCurrentlyInsideDanger) {
             // ENTER / REFRESH Evasion Mode
-            ai.aiIsEvading = true;
-            ai.aiEvasionTimer = 0.6; // Commit to evading for at least 0.6s
-            if (bestEscapeVec) ai.aiEvasionDir = bestEscapeVec;
-            evasionDir = ai.aiEvasionDir || null;
+            ai.aiIsEscapingHazard = true;
+            ai.aiHazardEscapeTimer = 0.6; // Commit to evading for at least 0.6s
+            if (bestEscapeVec) ai.aiHazardEscapeDir = bestEscapeVec;
+            evasionDir = ai.aiHazardEscapeDir || null;
         } else {
-            // NOT Inside Danger Zone (or safe)
-            if (ai.aiIsEvading) {
-                // Check Timer (Coasting)
-                ai.aiEvasionTimer = (ai.aiEvasionTimer || 0) - dt;
-                if (ai.aiEvasionTimer > 0) {
-                    // PRESERVE Persistence (Keep running to create safety buffer)
-                    // If we are coasting, use the last known evasion dir
-                    evasionDir = ai.aiEvasionDir || null;
+            // D. 持续性逃离逻辑
+            if (ai.aiIsEscapingHazard) {
+                ai.aiHazardEscapeTimer = (ai.aiHazardEscapeTimer || 0) - dt;
+                if (ai.aiHazardEscapeTimer > 0) {
+                    // Continue in the same direction
+                    evasionDir = ai.aiHazardEscapeDir || null;
                 } else {
-                    // EXIT Evasion Mode
-                    ai.aiIsEvading = false;
-                    // evasionDir remains null
+                    // Clear evasion
+                    ai.aiIsEscapingHazard = false;
                 }
             }
         }
@@ -3558,7 +3652,14 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         let finalMoveDir = moveDir;
 
         // [应用回避覆盖]
-        if (evasionDir) {
+        // [New] Forced Evasion from Aborted Actions (High Priority)
+        if ((ai.aiTacticalRetreatTimer || 0) > 0) {
+            ai.aiTacticalRetreatTimer = (ai.aiTacticalRetreatTimer || 0) - dt;
+            if (ai.aiTacticalRetreatDir) {
+                finalMoveDir = ai.aiTacticalRetreatDir;
+                shouldMove = true;
+            }
+        } else if (evasionDir) {
             finalMoveDir = evasionDir;
             // Evasion overrides movement direction
         } else if (!target) {
@@ -3578,8 +3679,33 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (ai.catIsCharging) {
                 // 蓄力超过 0.6s 则释放
                 if ((performance.now() - (ai.catChargeStartTime || 0)) / 1000 > 0.6) {
-                    ai.catIsCharging = false;
-                    handleCatPounce(ai, 0.6);
+                    // [Safety Check] Predict Landing Position
+                    const range = Math.min(CHAR_STATS.CAT.pounceSpeed * 60 * 0.6, 250); // Approx jump distance
+                    const landingPos = Utils.add(ai.pos, Utils.mult({ x: Math.cos(ai.angle), y: Math.sin(ai.angle) }, range));
+
+                    // Check Hazards at Landing Spot
+                    let isDangerous = false;
+                    // A. Lava Terrain
+                    isDangerous = stateRef.current.obstacles.some(o => (o.type === 'LAVA' || o.type === 'WATER') && Utils.checkCircleRectCollision(landingPos, ai.radius, o).collided);
+
+                    // B. Magma Pools (if not Pyro/immune)
+                    if (!isDangerous) {
+                        isDangerous = stateRef.current.groundEffects.some(g => g.type === 'MAGMA_POOL' && Utils.dist(landingPos, g.pos) < g.radius + ai.radius);
+                    }
+
+                    if (isDangerous) {
+                        // Abort Pounce
+                        ai.catIsCharging = false;
+                        ai.pounceCooldown = 1.0; // Short Penalty
+                        // Evasion: Try to move perpendicular/away
+                        const evasionAngle = ai.angle + (Math.random() > 0.5 ? Math.PI / 2 : -Math.PI / 2);
+                        ai.aiTacticalRetreatDir = { x: Math.cos(evasionAngle), y: Math.sin(evasionAngle) };
+                        ai.aiTacticalRetreatTimer = 0.5;
+                    } else {
+                        // Safe -> Pounce
+                        ai.catIsCharging = false;
+                        handleCatPounce(ai, 0.6);
+                    }
                 }
             } else {
                 if (target) {
@@ -3777,8 +3903,23 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 ai.isFiringFlamethrower = false;
             }
 
-            if (target && !ai.aiSkipSkills && ai.skillCooldown <= 0 && ai.silenceTimer <= 0 && distToTarget < 300) {
-                castMagmaPool(ai, target.pos);
+            if (target && !ai.aiSkipSkills && ai.skillCooldown <= 0 && ai.silenceTimer <= 0) {
+                const maxRange = 650; // Pyro projectile target range limit
+                const hpPercent = ai.hp / CHAR_STATS[CharacterType.PYRO].hp;
+
+                // Strategy 1: Defensive/Recovery (Low HP or in Water)
+                if ((hpPercent < 0.4 || ai.isWet) && distToTarget < 400) {
+                    // Cast on self to get magma heal/regen and clear wet status
+                    castMagmaPool(ai, ai.pos);
+                }
+                // Strategy 2: Offensive (InRange)
+                else if (distToTarget < 350) {
+                    castMagmaPool(ai, target.pos);
+                }
+                // Strategy 3: Long-range Poke/Zoning (Proactive)
+                else if (distToTarget < maxRange && Math.random() < 0.05) {
+                    castMagmaPool(ai, target.pos);
+                }
             }
 
             // Magma Detonation Logic
@@ -4122,11 +4263,21 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (e.hp <= 0) killEntity(e, p.id); // [新增] 召唤物死亡处理
                         if (Math.random() < 0.2) spawnParticles(e.pos, 1, '#ef4444', 2, 0.5);
                     } else {
-                        e.flameExposure = Math.min(100, e.flameExposure + 2);
-                        if (e.burnTimer <= 0) {
-                            applyStatus(e, 'burn', 3.0, p.id);
-                        } else {
-                            e.burnTimer = 3.0; // Refresh timer silently
+                        // Pyro is immune to fire statuses and exposure
+                        if (e.type !== CharacterType.PYRO) {
+                            const prevExposure = e.flameExposure || 0;
+                            e.flameExposure = Math.min(100, (e.flameExposure || 0) + 0.5);
+
+                            // Trigger Burst (爆燃) text and effect when reaching 100% accumulation
+                            if (prevExposure < 100 && e.flameExposure >= 100) {
+                                applyStatus(e, 'burst', 0, p.id);
+                            }
+
+                            if (e.burnTimer <= 0) {
+                                applyStatus(e, 'burn', 3.0, p.id);
+                            } else {
+                                e.burnTimer = 3.0; // Refresh timer silently
+                            }
                         }
                         const baseDmg = 95;
                         takeDamage(e, baseDmg * dt, CharacterType.PYRO, DamageType.FIRE);
@@ -4665,36 +4816,36 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (p.wukongComboTimer <= 0) p.wukongComboStep = 0;
         }
 
-        // If wet, take drowning damage
+        // Water Effects & Drowning
         if (p.isWet) {
-            // 1. 火焰球特殊机制：一旦进入潮湿状态，受双倍溺水伤害，持续产生蒸汽 (不要求停止移动)
-            if (p.type === CharacterType.PYRO) {
-                takeDamage(p, 200 * dt, CharacterType.ENVIRONMENT, DamageType.WATER); // 四倍持续伤害 (100 HP/s)
-                // 蒸汽特效 (Steam)
-                if (Math.random() < 0.4) {
-                    stateRef.current.particles.push({
-                        id: Math.random().toString(),
-                        pos: Utils.add(p.pos, { x: (Math.random() - 0.5) * 20, y: (Math.random() - 0.5) * 20 }),
-                        vel: { x: (Math.random() - 0.5) * 1, y: -2 - Math.random() * 2 }, // 向上飘
-                        life: 0.6 + Math.random() * 0.4,
-                        maxLife: 1.0,
-                        color: 'rgba(226, 232, 240, 0.7)', // 半透明白蒸汽
-                        size: 6 + Math.random() * 6,
-                        drag: 0.92
-                    });
-                }
+            // Pyro always steams when wet (regardless of speed)
+            if (p.type === CharacterType.PYRO && Math.random() < 0.4) {
+                stateRef.current.particles.push({
+                    id: Math.random().toString(),
+                    pos: Utils.add(p.pos, { x: (Math.random() - 0.5) * 20, y: (Math.random() - 0.5) * 20 }),
+                    vel: { x: (Math.random() - 0.5) * 1, y: -2 - Math.random() * 2 },
+                    life: 0.6 + Math.random() * 0.4,
+                    maxLife: 1.0,
+                    color: 'rgba(226, 232, 240, 0.7)',
+                    size: 6 + Math.random() * 6,
+                    drag: 0.92
+                });
             }
-            // 2. 其他角色：保持原有的“只有在水中静止/缓慢移动时才会溺水”机制
-            else if (Utils.mag(p.vel) < 0.8) {
-                // Sinking / Drowning
-                takeDamage(p, 50 * dt, CharacterType.ENVIRONMENT, DamageType.WATER); // 标准持续伤害 (50 HP/s)
-                if (Math.random() < 0.2) {
+
+            // Drowning Damage: Pyro drowns whenever wet. Others only when stationary.
+            const isStationary = Utils.mag(p.vel) < 0.8;
+            if (p.type === CharacterType.PYRO || isStationary) {
+                takeDamage(p, 50 * dt, CharacterType.ENVIRONMENT, DamageType.WATER);
+
+                // Bubbles for non-pyro only when drowning (stationary)
+                if (p.type !== CharacterType.PYRO && isStationary && Math.random() < 0.2) {
                     stateRef.current.particles.push({
                         id: Math.random().toString(),
                         pos: Utils.add(p.pos, { x: (Math.random() - 0.5) * 20, y: (Math.random() - 0.5) * 20 }),
-                        vel: { x: 0, y: -1 },
-                        life: 0.5, maxLife: 0.5,
-                        color: '#bae6fd', size: 3
+                        vel: { x: (Math.random() - 0.5) * 0.5, y: -1.7 }, // Faster upward movement
+                        life: 0.8, maxLife: 0.8, // Float higher
+                        color: '#bae6fd',
+                        size: 2.5 + Math.random() * 2 // Larger bubbles
                     });
                 }
             }
@@ -4726,12 +4877,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         if (p.type === CharacterType.PYRO) {
             const stats = CHAR_STATS[CharacterType.PYRO];
-            const state = stateRef.current;
-
-            // 检查是否在任意岩浆池内
-            const isInMagmaPool = state.groundEffects.some(g =>
-                g.type === 'MAGMA_POOL' && Utils.dist(p.pos, g.pos) < g.radius + p.radius
-            );
 
             if (p.isBurnedOut) {
                 // 燃尽期：慢速恢复
@@ -4742,21 +4887,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 }
             } else if (!p.isFiringFlamethrower) {
                 // 正常恢复
-                let regenRate = stats.fuelRegen;
-                if (isInMagmaPool) regenRate += stats.fuelRegenMagma;
-
-                p.fuel += regenRate * dt;
+                p.fuel += stats.fuelRegen * dt;
                 if (p.fuel > p.maxFuel) p.fuel = p.maxFuel;
-            } else if (isInMagmaPool) {
-                // 喷射中+在岩浆池：额外恢复（几乎抵消消耗）
-                p.fuel += stats.fuelRegenMagma * dt;
-                if (p.fuel > p.maxFuel) p.fuel = p.maxFuel;
-            }
-
-            // 岩浆池回血
-            if (isInMagmaPool && p.hp < p.maxHp) {
-                p.hp += stats.magmaHealRate * dt;
-                if (p.hp > p.maxHp) p.hp = p.maxHp;
             }
         } else if (p.type === CharacterType.TANK) {
             if (p.artilleryAmmo < p.maxArtilleryAmmo) {
@@ -4918,18 +5050,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             state.players.forEach(p => {
                 if (Utils.dist(p.pos, g.pos) < g.radius + p.radius) {
                     if (g.type === 'MAGMA_POOL') {
-                        if (p.id === g.ownerId) {
-                            if (p.hp < p.maxHp) p.hp += 50 * dt;
-                        } else {
-                            // 1. 造成持续伤害
-                            takeDamage(p, 50 * dt, CharacterType.ENVIRONMENT, DamageType.FIRE);
-
-                            // 2. 施加状态 (直接调用 applyStatus，视觉频率由全局 CD 管理)
-                            applyStatus(p, 'burn', 3.0, g.ownerId);
-                            applyStatus(p, 'slow', 3.0, g.ownerId);
-
-                            p.vel = Utils.mult(p.vel, 0.90);
-                        }
+                        handleMagmaInteraction(p, dt, g.ownerId);
                     }
                 }
             });
@@ -5006,13 +5127,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const updateParticles = (state: GameState, dt: number) => {
-        state.particles = state.particles.filter(p => p.life > 0);
         state.particles.forEach(p => {
             if (p.drag) p.vel = Utils.mult(p.vel, p.drag);
             p.pos = Utils.add(p.pos, Utils.mult(p.vel, dt * 60));
             p.life -= dt;
             if (p.spin) p.angle = (p.angle || 0) + p.spin;
         });
+        state.particles = state.particles.filter(p => p.life > 0);
     };
 
     const updateFloatingTexts = (state: GameState, dt: number) => {
@@ -5439,7 +5560,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             // Particles
             state.particles.forEach(p => {
-                ctx.globalAlpha = p.life / p.maxLife;
+                const alpha = Math.max(0, Math.min(1, p.life / (p.maxLife || 1)));
+                ctx.globalAlpha = alpha;
 
                 if (p.type === 'shard' && p.points) {
                     ctx.save();
