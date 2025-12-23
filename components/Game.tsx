@@ -2115,7 +2115,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         state.groundEffects.forEach(g => {
             if (g.type === 'MAGMA_POOL' && !g.isPendingDetonation) {
                 g.isPendingDetonation = true;
-                g.detonationTimer = 0.15;
+                g.detonationTimer = 0.3;
                 anyMarked = true;
             }
         });
@@ -2510,8 +2510,23 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             state.screenShakeTimer! -= deltaTime;
             if (state.screenShakeTimer! < 0) state.screenShakeTimer = 0;
         }
+
         // Allow physics/logic to run during VICTORY/DEFEAT for cool endings/spectating
         if (state.gameStatus === 'PAUSED') return;
+
+        // [New] Ambient Lava Bubbling (Boiling effect)
+        state.obstacles.filter(obs => obs.type === 'LAVA').forEach(lava => {
+            // Calculate bubble rate based on area (roughly)
+            const area = lava.width * lava.height;
+            const bubbleChance = Math.min(0.2, (area / 100000) * 0.1);
+            if (Math.random() < bubbleChance + 0.02) {
+                const particlePos = {
+                    x: lava.x + Math.random() * lava.width,
+                    y: lava.y + Math.random() * lava.height
+                };
+                spawnParticles(particlePos, 1, '#ef4444', 0.5, 0.5);
+            }
+        });
 
         // 1. [新增] 遍历所有玩家进行状态重置与死亡判定
         state.players.forEach(entity => {
@@ -2806,13 +2821,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (shouldBeInLava && !p1.isPouncing) {
                 // [Unified] Trigger Magma Interaction (Handles Damage, Burn, Slow, Burst, etc.)
                 handleMagmaInteraction(p1, deltaTime);
-
-                // [New] Lava Visuals: Bubbles/Sparks from current terrain
-                if (Math.random() < 0.05) {
-                    const offset = { x: (Math.random() - 0.5) * (topTerrain?.width || 0), y: (Math.random() - 0.5) * (topTerrain?.height || 0) };
-                    const particlePos = { x: (topTerrain?.x || 0) + (topTerrain?.width || 0) / 2 + offset.x, y: (topTerrain?.y || 0) + (topTerrain?.height || 0) / 2 + offset.y };
-                    spawnParticles(particlePos, 1, '#ef4444', 0.5, 0.5);
-                }
             }
 
             // 玩家间碰撞 (Player vs Player) - 双重循环
@@ -4415,12 +4423,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     if (shouldDetonate) {
                         // Mark for delayed detonation
                         newPool.isPendingDetonation = true;
-                        newPool.detonationTimer = 0.15; // Show for ~150ms
+                        newPool.detonationTimer = 0.3; // Show for ~300ms
 
                         // Also mark hit pools for simultaneous detonation
                         hitPools.forEach(pool => {
                             pool.isPendingDetonation = true;
-                            pool.detonationTimer = 0.15;
+                            pool.detonationTimer = 0.3;
                         });
                     }
 
@@ -5410,12 +5418,53 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.lineWidth = 2;
                     ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
                 } else if (obs.type === 'LAVA') {
-                    // Lava Rendering
-                    ctx.fillStyle = 'rgba(234, 88, 12, 0.3)'; // Orange-600 transparent
+                    // Lava Rendering (Aligned with MAGMA_POOL)
+                    // 1. Outer Base
+                    ctx.fillStyle = 'rgba(127, 29, 29, 0.5)';
                     ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
 
-                    // Animated Bubbles/Glow? (Keep simple for now, matching Water style)
-                    ctx.strokeStyle = 'rgba(234, 88, 12, 0.6)';
+                    // 2. Inner Core (Mimics the inner circle of Magma Pool)
+                    const inset = 25; // Balanced inset to show thicker "crust"
+                    if (obs.width > inset * 2 && obs.height > inset * 2) {
+                        ctx.fillStyle = 'rgba(185, 28, 28, 0.8)';
+                        ctx.fillRect(obs.x + inset, obs.y + inset, obs.width - inset * 2, obs.height - inset * 2);
+                    }
+
+                    // 3. Organic Internal Flow (Multi-layered shifting patches)
+                    const time = Date.now() / 1000;
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(obs.x, obs.y, obs.width, obs.height);
+                    ctx.clip();
+
+                    // Use screen for a glowing "heat" effect
+                    ctx.globalCompositeOperation = 'screen';
+
+                    for (let i = 0; i < 3; i++) {
+                        const layerTime = time * (0.3 + i * 0.2);
+                        // Random-like drift
+                        const driftX = Math.sin(layerTime * 0.5 + i) * 15;
+                        const driftY = Math.cos(layerTime * 0.7 + i) * 15;
+
+                        // Tuned: Even lower opacity for extreme subtlety
+                        const hue = 10 + i * 15; // 10 (Red-Orange) to 40 (Orange)
+                        ctx.fillStyle = `hsla(${hue}, 80%, 55%, ${0.02 + i * 0.01})`;
+
+                        // Coverage grid for the flow patches
+                        const step = 200;
+                        for (let x = obs.x - step / 2; x < obs.x + obs.width + step / 2; x += step) {
+                            for (let y = obs.y - step / 2; y < obs.y + obs.height + step / 2; y += step) {
+                                const pulse = Math.sin(layerTime + (x * 0.01) + (y * 0.01)) * 30;
+                                ctx.beginPath();
+                                ctx.arc(x + driftX + pulse, y + driftY - pulse, step * 0.75, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                        }
+                    }
+                    ctx.restore();
+
+                    // 3. Border
+                    ctx.strokeStyle = 'rgba(185, 28, 28, 1.0)';
                     ctx.lineWidth = 2;
                     ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
                 } else {
