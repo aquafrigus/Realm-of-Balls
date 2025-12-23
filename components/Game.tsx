@@ -113,6 +113,29 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         'charmTimer', 'tauntTimer', 'fearTimer'
     ] as const;
 
+    // 状态类型到属性名的映射（集中管理，避免重复定义）
+    const STATUS_PROPERTY_MAP: Record<string, string> = {
+        'fear': 'fearTimer',
+        'stun': 'stunTimer',
+        'slow': 'slowTimer',
+        'root': 'rootTimer',
+        'silence': 'silenceTimer',
+        'disarm': 'disarmTimer',
+        'blind': 'blindTimer',
+        'sleep': 'sleepTimer',
+        'petrify': 'petrifyTimer',
+        'burn': 'burnTimer',
+        'taunt': 'tauntTimer',
+        'charm': 'charmTimer',
+        'stealth': 'stealthTimer',
+        'haste': 'hasteTimer',
+        'invincible': 'invincibleTimer',
+        'burst': 'burstFlag',
+        'wet': 'isWet',
+        'heal': 'hp',
+        'revive': 'isDead'
+    };
+
     // Helper: 任何形式的控制状态（用于隐藏指示器、禁止自主瞄准等）
     const isControlled = (p: PlayerState): boolean => {
         return CONTROL_TIMER_KEYS.some(key => (p[key as keyof PlayerState] as number || 0) > 0);
@@ -123,6 +146,31 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         CONTROL_TIMER_KEYS.forEach(key => {
             (p as any)[key] = 0;
         });
+    };
+
+    // Helper: 清空所有状态效果（用于复活时）
+    const clearAllStatusEffects = (p: PlayerState) => {
+        // 自动遍历所有状态并清空（排除 heal 和 revive，它们不是状态效果）
+        Object.entries(STATUS_PROPERTY_MAP).forEach(([statusType, propName]) => {
+            // 跳过特殊类型
+            if (statusType === 'heal' || statusType === 'revive') return;
+
+            const currentValue = (p as any)[propName];
+
+            // 根据属性类型重置
+            if (typeof currentValue === 'boolean') {
+                (p as any)[propName] = false;
+            } else if (typeof currentValue === 'number') {
+                (p as any)[propName] = 0;
+            }
+        });
+
+        // 清空状态历史
+        p.statusHistory = [];
+
+        // 清空来源ID
+        p.tauntSourceId = undefined;
+        p.burnSourceId = undefined;
     };
 
     // Helper: 能否使用右键技能（防御/特殊技能）
@@ -754,6 +802,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             catChargeStartTime: 0,
             catIsCharging: false,
             idleTimer: 0,
+            prevAimAngle: 0,
             pounceCooldown: 0,
             isPouncing: false,
             pounceTimer: 0,
@@ -1021,29 +1070,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
         }
 
-        // Map simplified type names to actual property names
-        const map: Record<string, string> = {
-            'fear': 'fearTimer',
-            'stun': 'stunTimer',
-            'slow': 'slowTimer',
-            'root': 'rootTimer',
-            'silence': 'silenceTimer',
-            'disarm': 'disarmTimer',
-            'blind': 'blindTimer',
-            'sleep': 'sleepTimer',
-            'petrify': 'petrifyTimer',
-            'burn': 'burnTimer',
-            'taunt': 'tauntTimer',
-            'charm': 'charmTimer',
-            'stealth': 'stealthTimer',
-            'haste': 'hasteTimer',
-            'invincible': 'invincibleTimer',
-            'burst': 'burstFlag',
-            'wet': 'isWet',
-            'heal': 'hp',
-            'revive': 'isDead'
-        };
-
         // [New] Magic Shield Immunity Logic
         // While shield is active, immune to all CC (Hard & Soft)
         if ((target.magicShieldHp || 0) > 0) {
@@ -1076,12 +1102,18 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             target.statusHistory.shift();
         }
 
-        const propKey = map[type];
+        const propKey = STATUS_PROPERTY_MAP[type];
+
+        // [Special] Revive: Clear all status effects first
+        if (type === 'revive' && 'type' in target) {
+            clearAllStatusEffects(target as PlayerState);
+        }
 
         // Apply
         if (propKey) {
             if (typeof (target as any)[propKey] === 'boolean') {
-                (target as any)[propKey] = true;
+                // Special handling for revive: isDead should be set to false, not true
+                (target as any)[propKey] = (type === 'revive') ? false : true;
             } else {
                 (target as any)[propKey] = Math.max((target as any)[propKey] || 0, duration);
             }
@@ -1687,13 +1719,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
         else if (spell === 1) {
             // 《盔甲护身》- 护盾
-            // Cost: 40 MP
-            if ((p.mp || 0) < stats.protectManaCost) return;
+            // Cost: 100 MP
+            if ((p.mp || 0) < stats.armorManaCost) return;
 
             // Prevent recasting while shield is active
             if ((p.magicShieldHp || 0) > 0) return;
 
-            p.mp! -= stats.protectManaCost;
+            p.mp! -= stats.armorManaCost;
 
             p.magicShieldHp = stats.armorShieldHp;
             p.magicShieldTimer = stats.armorDuration / 1000;
@@ -3027,7 +3059,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
 
             // 4. 持续/周期性状态
-            if ((p.sleepTimer > 0 || (p.idleTimer || 0) > 3.0) && Math.random() < 0.01) {
+            if ((p.sleepTimer > 0 || (p.idleTimer || 0) > 5.0) && Math.random() < 0.01) {
                 spawn("zZz", '#ffffff', -0.5);
             }
 
@@ -3381,7 +3413,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 魔法球输入处理
             if (keysRef.current['MouseLeft']) {
                 // [修复] 添加状态检查
-                if (p.stunTimer <= 0 && (p.petrifyTimer || 0) <= 0 && (p.charmTimer || 0) <= 0 && p.sleepTimer <= 0) {
+                if (!isControlled(p) && p.silenceTimer <= 0) {
                     p.magicChargeTimer = (p.magicChargeTimer || 0) + dt;
                     handleMagicCurse(p, worldMouse);
                 } else {
@@ -4036,7 +4068,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 }
 
                 // 右键技能（保命）：低血量或敌人太近时使用
-                if (ai.secondarySkillCooldown <= 0 && (ai.mp || 0) >= stats.protectManaCost) {
+                // 检查是否有足够蓝量使用右键技能（三个技能蓝耗都是100）
+                if (ai.secondarySkillCooldown <= 0 && (ai.mp || 0) >= stats.expelliarmusManaCost) {
                     const shouldProtect =
                         (ai.hp < ai.maxHp * 0.4) || // 低血量
                         (distToTarget < 100 && Math.random() < 0.2) || // 敌人太近
@@ -4511,7 +4544,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // 无人机子弹穿墙
                 if (p.projectileType !== 'DRONE_SHOT') {
                     for (const obs of state.obstacles) {
-                        if (obs.type === 'WATER') continue;
+                        if (obs.type === 'WATER' || obs.type === 'LAVA') continue;
                         if (Utils.checkCircleRectCollision(p.pos, p.radius, obs).collided) {
 
                             // [New] Magic Spell Wall Penetration
@@ -4783,21 +4816,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             (p as any)._wasTaunted = true;
         }
 
-        if (p.silenceTimer > 0 || p.stunTimer > 0 || p.sleepTimer > 0 || (p.petrifyTimer || 0) > 0 || (p.charmTimer || 0) > 0) {
-            // 打断悟空球蓄力
-            if (p.wukongChargeState !== 'NONE') {
-                p.wukongChargeState = 'NONE';
-                p.wukongChargeTime = 0;
-                p.wukongChargeHoldTimer = 0;
-            }
-
-            // 打断猫猫球蓄力
-            if (p.catIsCharging) {
-                p.catIsCharging = false;
-                p.catChargeStartTime = 0;
-            }
-        }
-
         if (p.type === CharacterType.CAT && p.isPouncing) {
             p.pounceTimer -= dt;
 
@@ -4817,10 +4835,23 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // Idle Animation Logic for Cat
         if (p.type === CharacterType.CAT) {
-            // Only run idle logic if no movement keys are pressed and velocity is very low
+            // 检测各种动作状态
             const isMoving = Utils.mag(p.vel) > 1.0 || keysRef.current['KeyW'] || keysRef.current['KeyS'] || keysRef.current['KeyA'] || keysRef.current['KeyD'];
+            const isAttacking = p.attackCooldown > 0; // 刚刚进行了攻击
+            const isUsingSkill = p.skillCooldown > 0 || p.secondarySkillCooldown > 0; // 刚刚使用了技能
 
-            if (!isMoving) {
+            // 检测转向（面朝方向改变）
+            const prevAngle = p.prevAimAngle ?? p.aimAngle;
+            let angleDiff = Math.abs(p.aimAngle - prevAngle);
+            // 处理角度环绕（-π 到 π）
+            if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+            const isTurning = angleDiff > 0.05; // 转向阈值（约3度）
+
+            // 更新上一次的角度
+            p.prevAimAngle = p.aimAngle;
+
+            // 只有在没有任何动作时才累积 idleTimer
+            if (!isMoving && !isAttacking && !isUsingSkill && !isTurning) {
                 p.idleTimer = (p.idleTimer || 0) + dt;
             } else {
                 p.idleTimer = 0;
@@ -5240,26 +5271,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // Spectator Mode Logic
         if (human.isDead) {
-            // Priority:
-            // 1. Current Target (if alive)
-            // 2. Teammate (Highest HP)
-            // 3. Enemy (Highest HP)
-            // 4. Stay on Dead Target (if Game Over or no one valid)
 
             let currentTarget = spectatorTargetIdRef.current
                 ? state.players.find(p => p.id === spectatorTargetIdRef.current)
                 : null;
 
             const isGameOver = state.gameStatus === 'VICTORY' || state.gameStatus === 'DEFEAT';
-
-            // Need to switch if:
-            // - No target selected yet
-            // - Current target is dead AND game is NOT over (search for next fighter)
-            // - Current target is dead AND game IS over?? -> User said: "camera stays at the on-the-scene of the last killed ball".
-            //   So if Game Over, we generally STOP switching and just watch the dead body or the victor.
-            //   "If the last teammate also dies... if game ends... camera stays at the scene".
-            //   This implies: If I was watching X, and X dies, and that Ends Game -> Stay on X.
-            //   If I was watching X, and X dies, and Game Continues -> Switch.
 
             const shouldSwitch = !currentTarget || (currentTarget.isDead && !isGameOver);
 
@@ -7579,8 +7596,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                         ></div>
                                     </div>
                                 ) : (
-                                    <span className={`text-xs font-bold ${uiState.pMp < CHAR_STATS[CharacterType.MAGIC].protectManaCost ? 'text-red-500' : 'text-blue-400'}`}>
-                                        {uiState.pMp < CHAR_STATS[CharacterType.MAGIC].protectManaCost ? '法力不足' : '就绪'}
+                                    <span className={`text-xs font-bold ${uiState.pMp < CHAR_STATS[CharacterType.MAGIC].expelliarmusManaCost ? 'text-red-500' : 'text-blue-400'}`}>
+                                        {uiState.pMp < CHAR_STATS[CharacterType.MAGIC].expelliarmusManaCost ? '法力不足' : '就绪'}
                                     </span>
                                 )}
                             </div>

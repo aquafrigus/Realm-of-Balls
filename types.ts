@@ -105,6 +105,7 @@ export interface PlayerState extends GameEntity {
   catChargeStartTime?: number; // For Pounce charging
   catIsCharging?: boolean; // Is holding LMB
   idleTimer?: number; // Track idle time for zZz animation
+  prevAimAngle?: number; // Track previous aim angle for idle detection
   pounceCooldown: number; // [新增] 飞扑内置CD
   isPouncing: boolean;    // [新增] 是否处于飞扑（滞空）状态
   pounceTimer: number;

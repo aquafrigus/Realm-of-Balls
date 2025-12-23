@@ -188,9 +188,11 @@ class SoundManager {
             this.createOsc('sine', 120, 0.4, 0.7, 10);
             this.createNoise(0.5, 0.6, 400, 'lowpass');
         } else if (type === 'BLINK') {
-            // "Pew/Whoosh" - Rapid movement
-            this.createOsc('sine', 800, 0.15, 0.3, 200); // Frequency drop = Doppler-ish
-            this.createNoise(0.15, 0.2, 3000, 'highpass');
+            // "咻～" - 柔和的风声，不尖锐
+            // 1. 低频正弦波下滑，模拟柔和的空气流动
+            this.createOsc('sine', 600, 0.25, 0.2, 150); // 更低的起始频率，更柔和
+            // 2. 低通噪音，模拟风声而非尖锐的气流
+            this.createNoise(0.25, 0.15, 800, 'lowpass'); // 低通滤波让声音更柔和
         }
     }
 

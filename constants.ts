@@ -209,17 +209,17 @@ export const CHAR_STATS = {
     curseSpeed: 13,
 
     // Right Click - Protection Spell (保命咒语)
-    protectManaCost: 40,
+    // 《除你武器》
     expelliarmusManaCost: 100,
-    // 《除你武器》: 缴械3秒, CD 5秒, 范围极近(80)
     expelliarmusRange: 80,
     expelliarmusDuration: 5000,
     expelliarmusCooldown: 5000,
-    // 《盔甲护身》: 护盾500HP, 持续5秒, CD 7秒
+    // 《盔甲护身》
+    armorManaCost: 100,
     armorShieldHp: 2000,
     armorDuration: 5000,
     armorCooldown: 7000,
-    // 《移形换影》: 解除控制+闪现, CD 9秒
+    // 《移形换影》
     blinkManaCost: 100,
     blinkCooldown: 9000,
 
