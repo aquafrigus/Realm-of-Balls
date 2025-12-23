@@ -242,6 +242,8 @@ export interface GroundEffect {
   rotation?: number;
   targetId?: string;
   damageType?: DamageType;
+  isPendingDetonation?: boolean;
+  detonationTimer?: number;
 }
 
 export interface DangerZone {

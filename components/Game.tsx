@@ -2055,80 +2055,73 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
     };
 
+    const triggerMagmaPoolExplosion = (g: GroundEffect, owner: PlayerState) => {
+        // Visuals
+        spawnParticles(g.pos, 25, '#f97316', 8, 0.6);
+        stateRef.current.particles.push({
+            id: Math.random().toString(),
+            pos: g.pos,
+            vel: { x: 0, y: 0 },
+            life: 0.2, maxLife: 0.2,
+            color: 'rgba(255, 100, 0, 0.4)',
+            size: 200
+        });
+
+        // Damage
+        const enemies = getEnemies(owner);
+
+        enemies.forEach(t => {
+            const dist = Utils.dist(g.pos, t.pos);
+            if (dist < 200 + t.radius) { // Explosion Radius
+                // 区分目标类型：无人机 vs 玩家
+                if ('isSummon' in t) {
+                    // --- 针对无人机的逻辑 ---
+                    t.hp -= 250; // 对轻型单位造成巨额伤害
+
+                    // 简单的推开效果 (无人机质量轻，不用物理引擎计算)
+                    const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
+                    t.pos = Utils.add(t.pos, Utils.mult(dir, 100));
+
+                    spawnParticles(t.pos, 10, '#f97316', 5);
+
+                    if (t.hp <= 0) {
+                        killEntity(t, owner.id); // [新增] 使用统一的击杀函数
+                    }
+                } else {
+                    // --- 针对玩家的逻辑 ---
+                    takeDamage(t, 150, CharacterType.PYRO, DamageType.FIRE);
+
+                    // 物理击退
+                    const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
+                    applyKnockback(t, dir, 800);
+
+                    // 使用统一的 applyStatus 处理爆燃 (视觉+机制)
+                    applyStatus(t, 'burst', 0, owner.id);
+
+                    // 附加状态 (灼烧 - 仅限非火焰球)
+                    if (t.type !== CharacterType.PYRO) {
+                        applyStatus(t, 'burn', 5.0, owner.id);
+                    }
+                }
+            }
+        });
+    };
+
     const detonateMagmaPools = (p: PlayerState) => {
         if (p.silenceTimer > 0) return;
         const state = stateRef.current;
-        let exploded = false;
-        const newEffects: GroundEffect[] = [];
+        let anyMarked = false;
 
         state.groundEffects.forEach(g => {
-            // [修改] 增加 g.ownerId === p.id 判断，只引爆自己释放的岩浆
-            if (g.type === 'MAGMA_POOL') {  // 引爆所有岩浆池（无视归属）
-                exploded = true;
-
-                // Visuals
-                spawnParticles(g.pos, 25, '#f97316', 8, 0.6);
-                state.particles.push({
-                    id: Math.random().toString(),
-                    pos: g.pos,
-                    vel: { x: 0, y: 0 },
-                    life: 0.2, maxLife: 0.2,
-                    color: 'rgba(255, 100, 0, 0.4)',
-                    size: 200
-                });
-
-                // [修改] 获取所有敌对目标（玩家 + 无人机）
-                const enemies = getEnemies(p);
-
-                enemies.forEach(t => {
-                    const dist = Utils.dist(g.pos, t.pos);
-                    if (dist < 200 + t.radius) { // Explosion Radius
-                        // 区分目标类型：无人机 vs 玩家
-                        if ('isSummon' in t) {
-                            // --- 针对无人机的逻辑 ---
-                            t.hp -= 250; // 对轻型单位造成巨额伤害
-
-                            // 简单的推开效果 (无人机质量轻，不用物理引擎计算)
-                            const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
-                            t.pos = Utils.add(t.pos, Utils.mult(dir, 100));
-
-                            spawnParticles(t.pos, 10, '#f97316', 5);
-
-                            if (t.hp <= 0) {
-                                killEntity(t, p.id); // [新增] 使用统一的击杀函数
-                            }
-                        } else {
-                            // --- 针对玩家的逻辑 ---
-                            takeDamage(t, 150, CharacterType.PYRO, DamageType.FIRE);
-
-                            // 物理击退
-                            const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
-                            applyKnockback(t, dir, 800);
-
-                            // 使用统一的 applyStatus 处理爆燃 (视觉+机制)
-                            applyStatus(t, 'burst', 0, p.id);
-
-                            // 附加状态 (灼烧 - 仅限非火焰球)
-                            if (t.type !== CharacterType.PYRO) {
-                                applyStatus(t, 'burn', 5.0, p.id);
-                            }
-                        }
-                    }
-                });
-
-            } else {
-                newEffects.push(g);
+            if (g.type === 'MAGMA_POOL' && !g.isPendingDetonation) {
+                g.isPendingDetonation = true;
+                g.detonationTimer = 0.15;
+                anyMarked = true;
             }
         });
 
-        state.groundEffects = newEffects;
-
-        if (exploded) {
-            Sound.playSkill('MAGMA_EXPLODE');
-
-            // Screen Shake
-            state.camera.y += 5;
-            state.camera.x += (Math.random() - 0.5) * 10;
+        if (anyMarked) {
+            // Optional: Ignite sound? For now, the explosion sound is handled in updateGroundEffects
         }
     };
 
@@ -4392,33 +4385,55 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 if (p.life <= 0) {
                     p.life = 0; // Destroy projectile
 
-                    // 1. Check if landing on existing Magma Pool
-                    const hitPool = state.groundEffects.find(g =>
+                    const poolRadius = p.aoeRadius || 80;
+                    const hitPools = state.groundEffects.filter(g =>
                         g.type === 'MAGMA_POOL' &&
-                        Utils.dist(p.pos, g.pos) < g.radius + p.radius
+                        !g.isPendingDetonation && // Don't re-trigger ones already pending
+                        Utils.dist(p.pos, g.pos) < g.radius + poolRadius
                     );
 
-                    // 2. Check if landing on Lava Terrain
                     const hitLava = state.obstacles.some(obs =>
                         obs.type === 'LAVA' &&
-                        Utils.checkCircleRectCollision(p.pos, p.radius, obs).collided
+                        Utils.checkCircleRectCollision(p.pos, poolRadius, obs).collided
                     );
 
-                    if (hitPool || hitLava) {
-                        // Chain Reaction: Detonate owner's pools
-                        const owner = state.players.find(pl => pl.id === p.ownerId);
-                        if (owner) detonateMagmaPools(owner);
-                    } else {
-                        // Regular Impact: Create new pool
-                        state.groundEffects.push({
-                            id: Math.random().toString(), pos: p.pos, radius: p.aoeRadius || 80,
-                            life: 10, maxLife: 10, type: 'MAGMA_POOL', ownerId: p.ownerId, damageType: DamageType.FIRE
+                    const owner = state.players.find(pl => pl.id === p.ownerId);
+                    const shouldDetonate = owner && (hitPools.length > 0 || hitLava);
+
+                    // ALWAYS create the new pool first
+                    const newPool: GroundEffect = {
+                        id: Math.random().toString(),
+                        pos: p.pos,
+                        radius: poolRadius,
+                        life: 10,
+                        maxLife: 10,
+                        type: 'MAGMA_POOL',
+                        ownerId: p.ownerId,
+                        damageType: DamageType.FIRE
+                    };
+
+                    if (shouldDetonate) {
+                        // Mark for delayed detonation
+                        newPool.isPendingDetonation = true;
+                        newPool.detonationTimer = 0.15; // Show for ~150ms
+
+                        // Also mark hit pools for simultaneous detonation
+                        hitPools.forEach(pool => {
+                            pool.isPendingDetonation = true;
+                            pool.detonationTimer = 0.15;
                         });
                     }
 
-                    // Softer sound for impact/creation, loud sound is for detonation only
-                    Sound.playSkill('MAGMA_LAND');
-                    createExplosion(state, p.pos, 50, 0, p.ownerId, true, false);
+                    state.groundEffects.push(newPool);
+
+                    if (!shouldDetonate) {
+                        // Regular Impact sound/explosion (small visual)
+                        Sound.playSkill('MAGMA_LAND');
+                        createExplosion(state, p.pos, 50, 0, p.ownerId, true, false);
+                    } else {
+                        // Optional: Play a "fizzle/ignite" start sound? 
+                        // For now we just wait for the big pop.
+                    }
                 }
             }
             else if (p.projectileType === 'BOMB') {
@@ -5029,6 +5044,23 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 return; // 预警圈本身没有碰撞伤害
             }
 
+            // Delayed Magma Detonation
+            if (g.type === 'MAGMA_POOL' && g.isPendingDetonation && g.detonationTimer !== undefined) {
+                g.detonationTimer -= dt;
+                if (g.detonationTimer <= 0) {
+                    const owner = state.players.find(p => p.id === g.ownerId);
+                    if (owner) {
+                        triggerMagmaPoolExplosion(g, owner);
+                        Sound.playSkill('MAGMA_EXPLODE');
+                        // Screen Shake
+                        state.camera.y += 5;
+                        state.camera.x += (Math.random() - 0.5) * 10;
+                    }
+                    g.life = 0; // Terminate effect
+                    return;
+                }
+            }
+
             if (g.type === 'WUKONG_SMASH' || g.type === 'CRACK') {
                 if (Math.random() < 0.2) {
                     const offset = Utils.mult({ x: Math.random() - 0.5, y: Math.random() - 0.5 }, g.radius * 2 || 40);
@@ -5406,6 +5438,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.beginPath();
                     ctx.arc(g.pos.x, g.pos.y, g.radius * 0.6, 0, Math.PI * 2);
                     ctx.fill();
+
+                    // [New] Detonation Flash
+                    if (g.isPendingDetonation) {
+                        const flashIntensity = Math.sin(Date.now() / 30) * 0.5 + 0.5;
+                        ctx.fillStyle = `rgba(255, 255, 255, ${flashIntensity * 0.4})`;
+                        ctx.beginPath();
+                        ctx.arc(g.pos.x, g.pos.y, g.radius * 1.1, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
                 } else if (g.type === 'CRACK') {
                     // Fading Crack
                     const alpha = g.life / g.maxLife;
