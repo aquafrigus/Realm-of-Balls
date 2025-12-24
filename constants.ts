@@ -193,8 +193,8 @@ export const CHAR_STATS = {
 
     color: '#e5e7eb',   // 基础色为白色，进入对局后若黑化则重新在对局内赋值colorDarkWizard
     darkWizardColor: '#020617',
-    uiThemeColor: 'zinc',
-    darkWizardUiThemeColor: 'slate',
+    uiThemeColor: 'slate',
+    darkWizardUiThemeColor: 'zinc',
 
     // MP System
     maxMp: 200,

@@ -28,6 +28,7 @@ interface UIState {
     pActiveDroneStats: { hp: number, maxHp: number, life: number, maxLife: number } | null;
     pTankMode: TankMode;
     pType: CharacterType;
+    pUiThemeColor: string; // Player's dynamic UI theme color
     pSkillCD: number; pSkillMaxCD: number;
     pSecondarySkillCD: number; pSecondarySkillMaxCD: number;
     pIsBurnedOut: boolean;
@@ -37,6 +38,8 @@ interface UIState {
     pCatCharge: number;
     pMp: number; pMaxMp: number; // Magic Ball MP
     pMagicForm?: 'WHITE' | 'BLACK'; // Magic Ball Form
+    pMagicShieldHp: number; // Magic Ball Shield HP
+    pMagicShieldMaxHp: number; // Magic Ball Max Shield HP
     eCatLives: number;
     eType: CharacterType;
     eDisplayName: string; // 最近敌人显示名称（用于无人机等）
@@ -662,6 +665,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         pDroneState: 'READY', pDroneTimer: 0, pDroneMaxTimer: 10, // Tank Drone
         pActiveDroneStats: null,
         pType: CharacterType.PYRO,
+        pUiThemeColor: CHAR_STATS[CharacterType.PYRO].uiThemeColor,
         pSkillCD: 0, pSkillMaxCD: 1,
         pSecondarySkillCD: 0, // General secondary skill CD
         pSecondarySkillMaxCD: 1,
@@ -676,6 +680,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Magic UI
         pMp: 0, pMaxMp: 200,
         pMagicForm: 'WHITE',
+        pMagicShieldHp: 0,
+        pMagicShieldMaxHp: CHAR_STATS[CharacterType.MAGIC].armorShieldHp,
 
         eCatLives: 0,
 
@@ -1674,7 +1680,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        let spell = 0;
+        let spell = 1;
         // const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
@@ -2584,6 +2590,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 if (entity.type === CharacterType.CAT && (entity.lives || 0) > 1) {
                     entity.lives = (entity.lives || 1) - 1;
                     entity.hp = entity.maxHp;
+                    clearAllStatusEffects(entity);
                     entity.invincibleTimer = 1.5;
                     entity.pos = { x: Math.random() * (MAP_SIZE.width - 400) + 200, y: Math.random() * (MAP_SIZE.height - 400) + 200 };
                     entity.vel = { x: 0, y: 0 };
@@ -7343,6 +7350,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     pActiveDroneStats: activeDroneStats,
                     pTankMode: uiTarget.tankMode,
                     pType: uiTarget.type,
+                    pUiThemeColor: uiTarget.uiThemeColor,
                     pSkillCD: uiTarget.skillCooldown, pSkillMaxCD: uiTarget.skillMaxCooldown,
                     pSecondarySkillCD: uiTarget.secondarySkillCooldown,
                     pSecondarySkillMaxCD: uiTarget.secondarySkillMaxCooldown,
@@ -7358,6 +7366,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     pMp: uiTarget.mp || 0,
                     pMaxMp: uiTarget.maxMp || 200,
                     pMagicForm: uiTarget.magicForm || 'WHITE',
+                    pMagicShieldHp: uiTarget.magicShieldHp || 0,
+                    pMagicShieldMaxHp: CHAR_STATS[CharacterType.MAGIC].armorShieldHp,
 
                     // 敌人状态基于显示对象(可能是缓存的)
                     eCatLives: (displayEnemy && displayEnemy.type === CharacterType.CAT) ? (displayEnemy.lives || 0) : 0,
@@ -7559,11 +7569,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         <div className="mb-2">
                             <div className="flex justify-between items-center mb-1">
                                 <span className="text-xs text-slate-300 font-bold uppercase">九命猫猫</span>
-                                <span className={`text-xs text-${CHAR_STATS[CharacterType.CAT].uiThemeColor}-400 font-mono`}>{uiState.pCatLives} / 9</span>
+                                <span className={`text-xs text-${uiState.pUiThemeColor}-400 font-mono`}>{uiState.pCatLives} / 9</span>
                             </div>
                             <div className="flex gap-1">
                                 {Array.from({ length: 9 }).map((_, i) => (
-                                    <div key={i} className={`w-3 h-3 rounded-full border border-${CHAR_STATS[CharacterType.CAT].uiThemeColor}-900/50 ${i < uiState.pCatLives ? `bg-${CHAR_STATS[CharacterType.CAT].uiThemeColor}-400 shadow-[0_0_5px_currentColor] text-${CHAR_STATS[CharacterType.CAT].uiThemeColor}-400` : 'bg-slate-800'}`}></div>
+                                    <div key={i} className={`w-3 h-3 rounded-full border border-${uiState.pUiThemeColor}-900/50 ${i < uiState.pCatLives ? `bg-${uiState.pUiThemeColor}-400 shadow-[0_0_5px_currentColor] text-${uiState.pUiThemeColor}-400` : 'bg-slate-800'}`}></div>
                                 ))}
                             </div>
                             {/* Pounce charge bar removed as requested */}
@@ -7590,7 +7600,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     <div className="flex items-center justify-between mt-5 pt-3 border-t border-slate-700/50">
                         <div className="flex items-center gap-3">
                             {/* ENHANCED SKILL ICON */}
-                            <div className={`w-14 h-14 rounded-lg border-2 overflow-hidden relative flex items-center justify-center transition-colors ${uiState.pSkillCD <= 0 ? `border-${CHAR_STATS[uiState.pType].uiThemeColor}-400 shadow-[0_0_15px_currentColor] text-${CHAR_STATS[uiState.pType].uiThemeColor}-400` : 'border-slate-600 bg-slate-800'}`}>
+                            <div className={`w-14 h-14 rounded-lg border-2 overflow-hidden relative flex items-center justify-center transition-colors ${uiState.pSkillCD <= 0 ? `border-${uiState.pUiThemeColor}-400 shadow-[0_0_15px_currentColor] text-${uiState.pUiThemeColor}-400` : 'border-slate-600 bg-slate-800'}`}>
                                 {getSkillIcon(uiState.pType)}
 
                                 <div
@@ -7600,13 +7610,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                 ></div>
 
                                 {uiState.pSkillCD <= 0 && (
-                                    <div className={`absolute inset-0 bg-${CHAR_STATS[uiState.pType].uiThemeColor}-400/20 animate-pulse z-0`}></div>
+                                    <div className={`absolute inset-0 bg-${uiState.pUiThemeColor}-400/20 animate-pulse z-0`}></div>
                                 )}
                             </div>
 
                             <div className="flex flex-col">
                                 <span className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">技能 (Space)</span>
-                                <span className={`text-sm font-bold ${uiState.pSkillCD <= 0 ? `text-${CHAR_STATS[uiState.pType].uiThemeColor}-400` : 'text-slate-500'}`}>
+                                <span className={`text-sm font-bold ${uiState.pSkillCD <= 0 ? `text-${uiState.pUiThemeColor}-400` : 'text-slate-500'}`}>
                                     {uiState.pSkillCD > 0 ? (uiState.pType === CharacterType.CAT ? `${uiState.pSkillCD.toFixed(1)}s` : "冷却中...") : getSkillName(uiState.pType)}
                                 </span>
                             </div>
@@ -7629,12 +7639,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                 {uiState.pSecondarySkillCD > 0 ? (
                                     <div className="w-full h-1.5 bg-slate-700 rounded-full mt-1 overflow-hidden">
                                         <div
-                                            className="h-full bg-orange-600"
+                                            className={`h-full bg-${uiState.pUiThemeColor}-600`}
                                             style={{ width: `${(1 - uiState.pSecondarySkillCD / 3.0) * 100}%` }}
                                         ></div>
                                     </div>
                                 ) : (
-                                    <span className="text-xs font-bold text-orange-400">就绪</span>
+                                    <span className={`text-xs font-bold text-${uiState.pUiThemeColor}-400`}>就绪</span>
                                 )}
                             </div>
                         )}
@@ -7646,12 +7656,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                 {uiState.pWukongThrustTimer > 0 ? (
                                     <div className="w-full h-1.5 bg-slate-700 rounded-full mt-1 overflow-hidden">
                                         <div
-                                            className="h-full bg-yellow-600"
+                                            className={`h-full bg-${uiState.pUiThemeColor}-600`}
                                             style={{ width: `${(1 - uiState.pWukongThrustTimer / 4.0) * 100}%` }}
                                         ></div>
                                     </div>
                                 ) : (
-                                    <span className="text-xs font-bold text-yellow-400">就绪</span>
+                                    <span className={`text-xs font-bold text-${uiState.pUiThemeColor}-400`}>就绪</span>
                                 )}
                             </div>
                         )}
@@ -7663,12 +7673,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                 {uiState.pSecondarySkillCD > 0 ? (
                                     <div className="w-full h-1.5 bg-slate-700 rounded-full mt-1 overflow-hidden">
                                         <div
-                                            className="h-full bg-amber-600"
+                                            className={`h-full bg-${uiState.pUiThemeColor}-600`}
                                             style={{ width: `${(1 - uiState.pSecondarySkillCD / uiState.pSecondarySkillMaxCD) * 100}%` }}
                                         ></div>
                                     </div>
                                 ) : (
-                                    <span className="text-xs font-bold text-amber-400">就绪</span>
+                                    <span className={`text-xs font-bold text-${uiState.pUiThemeColor}-400`}>就绪</span>
                                 )}
                             </div>
                         )}
@@ -7676,16 +7686,31 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         {/* MAGIC PROTECTION CD INDICATOR */}
                         {uiState.pType === CharacterType.MAGIC && (
                             <div className="flex flex-col items-end w-24">
-                                <span className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">随机咒语 (右键)</span>
-                                {uiState.pSecondarySkillCD > 0 ? (
+                                <span className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">保护咒语 (右键)</span>
+                                {uiState.pMagicShieldHp > 0 ? (
+                                    // 护盾存在时显示护盾值和护盾条
+                                    <>
+                                        <span className="text-xs font-bold text-violet-400 text-center w-full">
+                                            护盾
+                                        </span>
+                                        <div className="w-full h-1.5 bg-slate-700 rounded-full mt-0.5 overflow-hidden">
+                                            <div
+                                                className="h-full bg-violet-500"
+                                                style={{ width: `${(uiState.pMagicShieldHp / uiState.pMagicShieldMaxHp) * 100}%` }}
+                                            ></div>
+                                        </div>
+                                    </>
+                                ) : uiState.pSecondarySkillCD > 0 ? (
+                                    // CD中显示CD进度条
                                     <div className="w-full h-1.5 bg-slate-700 rounded-full mt-1 overflow-hidden">
                                         <div
-                                            className="h-full bg-blue-600"
+                                            className={`h-full bg-${uiState.pUiThemeColor}-600`}
                                             style={{ width: `${(1 - uiState.pSecondarySkillCD / uiState.pSecondarySkillMaxCD) * 100}%` }}
                                         ></div>
                                     </div>
                                 ) : (
-                                    <span className={`text-xs font-bold ${uiState.pMp < CHAR_STATS[CharacterType.MAGIC].expelliarmusManaCost ? 'text-red-500' : 'text-blue-400'}`}>
+                                    // 就绪或法力不足
+                                    <span className={`text-xs font-bold ${uiState.pMp < CHAR_STATS[CharacterType.MAGIC].expelliarmusManaCost ? 'text-red-500' : `text-${uiState.pUiThemeColor}-400`}`}>
                                         {uiState.pMp < CHAR_STATS[CharacterType.MAGIC].expelliarmusManaCost ? '法力不足' : '就绪'}
                                     </span>
                                 )}
@@ -7717,7 +7742,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             <div className="flex flex-col items-end">
                                 <span className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">无人机 (右键)</span>
                                 {uiState.pDroneState === 'READY' ? (
-                                    <span className="text-xs font-bold text-emerald-400">就绪</span>
+                                    <span className={`text-xs font-bold text-${uiState.pUiThemeColor}-400`}>就绪</span>
                                 ) : (uiState.pDroneState === 'DEPLOYED' ? (
                                     uiState.pActiveDroneStats ? (
                                         <div className="flex flex-col w-24">
