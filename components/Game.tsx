@@ -1674,17 +1674,17 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     // 右键技能 - 随机保命咒语
     const handleMagicProtection = (p: PlayerState) => {
-        if (!canUseSecondarySkill(p)) return;
         if (p.secondarySkillCooldown > 0) return;
 
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        let spell = 1;
+        let spell = 2;
         // const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
             // 《除你武器》
+            if (!canUseSecondarySkill(p)) return;
             // Cost: 100 MP
             if ((p.mp || 0) < stats.expelliarmusManaCost!) return; // Fizzle if not enough mana
 
@@ -1727,6 +1727,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
         else if (spell === 1) {
             // 《盔甲护身》- 护盾
+            if (!canUseSecondarySkill(p)) return;
             // Cost: 100 MP
             if ((p.mp || 0) < stats.armorManaCost) return;
 
@@ -1763,6 +1764,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
         else {
             // 《移形换影》- 解除控制+闪现
+            // 不检查 canUseSecondarySkill，只检查沉默
+            if (p.silenceTimer > 0) return;
             // Cost: 100 MP
             const cost = (stats as any).blinkManaCost || 100;
 
@@ -3151,6 +3154,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const handlePlayerInput = (p: PlayerState, dt: number) => {
+        if (p.type === CharacterType.MAGIC && keysRef.current['MouseRight']) {
+            handleMagicProtection(p);
+        }
+
         // [Priority System] Fear > Taunt > Charm
         // These forced movements must happen BEFORE the isControlled early return,
         // because they are technically "control" effects themselves but require movement processing.
@@ -3249,6 +3256,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
             return; // Taunt/Charm overrides normal input
         }
+
+
 
         // Hard CC Check (Stun, Sleep, Petrify) - Return early, no input allowed
         if (isControlled(p)) {
@@ -3498,9 +3507,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // Decay charge when not firing
                 p.magicChargeTimer = Math.max(0, (p.magicChargeTimer || 0) - dt * 2);
             }
-            if (keysRef.current['MouseRight']) {
-                handleMagicProtection(p);
-            }
+
             if (keysRef.current['Space']) {
                 handleMagicUltimate(p);
             }
