@@ -110,11 +110,44 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         return !!entity.isMechanical;
     };
 
-    // 硬控状态计时器的属性名（对应 isControlled 中的六种状态）
-    const CONTROL_TIMER_KEYS = [
-        'stunTimer', 'sleepTimer', 'petrifyTimer',
-        'charmTimer', 'tauntTimer', 'fearTimer'
-    ] as const;
+    // 硬控状态定义：状态类型 -> 计时器属性名
+    const HARD_CC_CONFIG: Record<string, string> = {
+        'stun': 'stunTimer',
+        'sleep': 'sleepTimer',
+        'petrify': 'petrifyTimer',
+        'charm': 'charmTimer',
+        'taunt': 'tauntTimer',
+        'fear': 'fearTimer'
+    };
+    const HARD_CC_STATUS_TYPES = Object.keys(HARD_CC_CONFIG) as (keyof typeof HARD_CC_CONFIG)[];
+    const CONTROL_TIMER_KEYS = Object.values(HARD_CC_CONFIG) as (keyof PlayerState)[];
+
+    // 所有解控技能/机制都应在这里添加触发条件
+    const getCleanseReasons = (p: PlayerState): string[] => {
+        const reasons: string[] = [];
+
+        // 移形换影：传送动画开始时解控
+        if (p.apparitionPhase === 'DISAPPEARING') {
+            reasons.push('apparition');
+        }
+
+        // 呼神护卫：光灵球刚生成时解控（检测光灵球存在且时间接近最大值）
+        if ((p.lightSpiritTimer || 0) > 0) {
+            const stats = CHAR_STATS[CharacterType.MAGIC];
+            const maxDuration = stats.lightSpiritDuration / 1000;
+            // 如果光灵球计时器接近最大值（刚释放），触发解控
+            if ((p.lightSpiritTimer || 0) >= maxDuration - 0.1) {
+                reasons.push('patronus');
+            }
+        }
+
+        return reasons;
+    };
+
+    // 检查玩家是否处于控制免疫状态（用于 applyStatus 阻挡）
+    const hasCcImmunity = (p: PlayerState): boolean => {
+        return (p.ccImmuneTimer || 0) > 0;
+    };
 
     // 状态类型到属性名的映射（集中管理，避免重复定义）
     const STATUS_PROPERTY_MAP: Record<string, string> = {
@@ -408,6 +441,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         particles: [],
         groundEffects: [],
         drones: [],
+        lightSpirits: [],
         obstacles: generateObstacles(),
         floatingTexts: [],
         camera: { x: 0, y: 0 },
@@ -1093,11 +1127,17 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
         }
 
-        // [New] Update Status History for Color Logic (Latest Applied)
-        // Ensure array exists
+        // [New] 光灵球控制免疫（呼神护卫期间免疫硬控）
+        if (hasCcImmunity(target) && HARD_CC_STATUS_TYPES.includes(type as any)) {
+            // 银白色粒子表示免疫
+            spawnParticles(target.pos, 5, '#f8fafc', 3, 0.3);
+            // 飘字反馈
+            target.statusLabel = "免疫!";
+            return; // IMMUNE - 在施加时直接阻挡
+        }
+
         if (!target.statusHistory) target.statusHistory = [];
 
-        // Remove if already exists (to move it to end)
         const idx = target.statusHistory.indexOf(type);
         if (idx !== -1) {
             target.statusHistory.splice(idx, 1);
@@ -1777,9 +1817,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if ((p.mp || 0) < cost) return;
             p.mp! -= cost;
 
-            // 解除所有控制 (Cleanse)
-            clearControlEffects(p);
-
             // 计算最安全位置
             const safePos = calculateSafestPosition(p);
 
@@ -1804,19 +1841,20 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     // 大招技能
     const handleMagicUltimate = (p: PlayerState) => {
-        if (!canUseUltimate(p)) return;
         if (p.skillCooldown > 0) return;
 
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         if (p.magicForm === 'WHITE') {
-            // 《呼神护卫》- 白魔法球
+            // 《呼神护卫》- 白魔法球 (解控技能，只检查沉默，不检查控制状态)
+            if (p.silenceTimer > 0) return;
+
             const mpSpent = p.mp || 0;
             if (mpSpent < 50) return; // 至少需要50 MP
             p.mp = 0;
             p.skillCooldown = stats.skillCooldown / 1000;
 
-            // 三道冲击波 + 击退
+            // 三道银白色冲击波 + 击退
             for (let wave = 0; wave < 3; wave++) {
                 stateRef.current.groundEffects.push({
                     id: Math.random().toString(),
@@ -1846,17 +1884,38 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 }
             });
 
-            // 召唤光灵球
-            p.lightSpiritTimer = stats.lightSpiritDuration / 1000;
-            p.ccImmuneTimer = stats.lightSpiritDuration / 1000;
+            // 召唤光灵球守护神实体
+            const spiritDuration = stats.lightSpiritDuration / 1000;
+            stateRef.current.lightSpirits.push({
+                id: Math.random().toString(),
+                ownerId: p.id,
+                pos: { ...p.pos },
+                vel: { x: 0, y: 0 },
+                life: spiritDuration,
+                maxLife: spiritDuration,
+                radius: stats.lightSpiritRadius,
+                orbitAngle: 0,
+                state: 'ORBITING',
+                cooldown: 0,
+                hitTargets: [],
+            });
+
+            p.lightSpiritTimer = spiritDuration;
+            p.ccImmuneTimer = spiritDuration;
             p.statusLabel = MAGIC_SPELL_LINES.patronus + '!';
 
             // 屏幕震动
             stateRef.current.screenShakeTimer = 0.5;
             stateRef.current.screenShakeIntensity = 300;
 
+            // 爆发银白色粒子效果
+            spawnParticles(p.pos, 30, '#f8fafc', 8, 0.8);
+
         } else {
             // 《阿瓦达啃大瓜》- 黑魔法球（简化版 - 瞬发）
+            // 这不是解控技能，需要检查控制和沉默状态
+            if (!canUseUltimate(p)) return;
+
             const mpSpent = p.mp || 0;
             if (mpSpent < 80) return; // 至少需要80 MP
 
@@ -2101,6 +2160,150 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             Sound.playShot('LMG');
             lastDroneSoundTimeRef.current = performance.now();
         }
+    };
+
+    // 光灵球守护神更新逻辑
+    const updateLightSpirits = (state: GameState, dt: number) => {
+        const stats = CHAR_STATS[CharacterType.MAGIC];
+
+        // 过滤已过期的光灵球
+        state.lightSpirits = state.lightSpirits.filter(spirit => spirit.life > 0);
+
+        state.lightSpirits.forEach(spirit => {
+            spirit.life -= dt;
+            spirit.cooldown = Math.max(0, spirit.cooldown - dt);
+
+            const owner = state.players.find(p => p.id === spirit.ownerId);
+            if (!owner || owner.isDead) {
+                spirit.life = 0; // 主人死亡，光灵球消散
+                return;
+            }
+
+            // 获取主人的敌人
+            const enemies = getEnemies(owner);
+
+            if (spirit.state === 'ORBITING') {
+                // 环绕主人
+                spirit.orbitAngle += stats.lightSpiritOrbitSpeed * dt;
+                const targetPos = {
+                    x: owner.pos.x + Math.cos(spirit.orbitAngle) * stats.lightSpiritOrbitRadius,
+                    y: owner.pos.y + Math.sin(spirit.orbitAngle) * stats.lightSpiritOrbitRadius
+                };
+
+                // 平滑移动到目标位置
+                const toTarget = Utils.sub(targetPos, spirit.pos);
+                const dist = Utils.mag(toTarget);
+                if (dist > 5) {
+                    const moveSpeed = Math.min(dist, stats.lightSpiritSpeed * 60 * dt);
+                    spirit.pos = Utils.add(spirit.pos, Utils.mult(Utils.normalize(toTarget), moveSpeed));
+                } else {
+                    spirit.pos = targetPos;
+                }
+
+                // 检测是否有敌人接近，触发冲撞
+                if (spirit.cooldown <= 0) {
+                    let closestEnemy: any = null;
+                    let closestDist = Infinity;
+
+                    enemies.forEach(enemy => {
+                        if (enemy.isDead) return;
+                        const d = Utils.dist(owner.pos, enemy.pos);
+                        if (d < stats.lightSpiritChargeRange && d < closestDist) {
+                            closestDist = d;
+                            closestEnemy = enemy;
+                        }
+                    });
+
+                    if (closestEnemy) {
+                        // 开始冲撞
+                        spirit.state = 'CHARGING';
+                        spirit.targetId = closestEnemy.id;
+                        spirit.chargeStartPos = { ...spirit.pos };
+                        // 冲撞终点：穿过敌人后再飞一段距离
+                        const dirToEnemy = Utils.normalize(Utils.sub(closestEnemy.pos, spirit.pos));
+                        spirit.chargeEndPos = Utils.add(closestEnemy.pos, Utils.mult(dirToEnemy, 80));
+                        spirit.chargeProgress = 0;
+                        spirit.hitTargets = [];
+                    }
+                }
+
+            } else if (spirit.state === 'CHARGING') {
+                // 极快冲撞
+                spirit.chargeProgress = (spirit.chargeProgress || 0) + dt * 4; // 0.25秒完成冲撞
+
+                if (spirit.chargeProgress >= 1) {
+                    // 冲撞完成，开始返回
+                    spirit.state = 'RETURNING';
+                    spirit.chargeProgress = 1;
+                } else {
+                    // 插值移动
+                    const startPos = spirit.chargeStartPos!;
+                    const endPos = spirit.chargeEndPos!;
+                    spirit.pos = {
+                        x: startPos.x + (endPos.x - startPos.x) * spirit.chargeProgress,
+                        y: startPos.y + (endPos.y - startPos.y) * spirit.chargeProgress
+                    };
+
+                    // 碰撞检测：击退路径上的敌人
+                    enemies.forEach(enemy => {
+                        if (enemy.isDead) return;
+                        if (spirit.hitTargets.includes(enemy.id)) return; // 已击中过
+
+                        const dist = Utils.dist(spirit.pos, enemy.pos);
+                        if (dist < spirit.radius + (enemy.radius || 25)) {
+                            // 命中！击退敌人
+                            spirit.hitTargets.push(enemy.id);
+                            const knockbackDir = Utils.normalize(Utils.sub(enemy.pos, spirit.pos));
+
+                            if ('isSummon' in enemy) {
+                                // 对召唤物的处理
+                                const pushDist = 50;
+                                enemy.pos = Utils.add(enemy.pos, Utils.mult(knockbackDir, pushDist));
+                            } else {
+                                // 对玩家的击退
+                                applyKnockback(enemy, knockbackDir, stats.lightSpiritChargeKnockback);
+                            }
+
+                            // 视觉效果
+                            spawnParticles(enemy.pos, 10, '#f8fafc', 5, 0.4);
+                            Sound.playHit();
+                        }
+                    });
+                }
+
+            } else if (spirit.state === 'RETURNING') {
+                // 返回主人身边
+                const toOwner = Utils.sub(owner.pos, spirit.pos);
+                const dist = Utils.mag(toOwner);
+
+                if (dist < stats.lightSpiritOrbitRadius + 10) {
+                    // 到达主人身边，回到环绕状态
+                    spirit.state = 'ORBITING';
+                    spirit.cooldown = stats.lightSpiritChargeCooldown;
+                    spirit.orbitAngle = Math.atan2(spirit.pos.y - owner.pos.y, spirit.pos.x - owner.pos.x);
+                } else {
+                    // 快速返回
+                    const moveSpeed = stats.lightSpiritReturnSpeed * 60 * dt;
+                    spirit.pos = Utils.add(spirit.pos, Utils.mult(Utils.normalize(toOwner), moveSpeed));
+                }
+            }
+
+            // 生成拖尾粒子
+            if (Math.random() < 0.5) {
+                state.particles.push({
+                    id: Math.random().toString(),
+                    pos: { ...spirit.pos },
+                    vel: {
+                        x: (Math.random() - 0.5) * 2,
+                        y: (Math.random() - 0.5) * 2
+                    },
+                    life: 0.3,
+                    maxLife: 0.3,
+                    color: spirit.state === 'CHARGING' ? '#fef08a' : '#f8fafc',
+                    size: 4 + Math.random() * 3,
+                });
+            }
+        });
     };
 
     const triggerMagmaPoolExplosion = (g: GroundEffect, owner: PlayerState) => {
@@ -2993,6 +3196,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         updateProjectiles(state, deltaTime);
         updateGroundEffects(state, deltaTime);
         updateDrones(state, deltaTime);
+        updateLightSpirits(state, deltaTime);
         updateParticles(state, deltaTime);
         updateFloatingTexts(state, deltaTime);
 
@@ -3161,6 +3365,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const handlePlayerInput = (p: PlayerState, dt: number) => {
+        // [统一解控触发器] 检查所有解控条件并清除控制效果
+        const cleanseReasons = getCleanseReasons(p);
+        if (cleanseReasons.length > 0) {
+            clearControlEffects(p);
+        }
+
         // 移形换影动画期间禁止其他输入
         if (p.apparitionPhase && p.apparitionPhase !== 'NONE') {
             return;
@@ -3170,9 +3380,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             handleMagicProtection(p);
         }
 
+        // [解控技能早期处理] 白魔法球《呼神护卫》可在被控制时释放
+        if (p.type === CharacterType.MAGIC && p.magicForm === 'WHITE' && keysRef.current['Space']) {
+            handleMagicUltimate(p);
+        }
+
         // [Priority System] Fear > Taunt > Charm
-        // These forced movements must happen BEFORE the isControlled early return,
-        // because they are technically "control" effects themselves but require movement processing.
         if ((p.fearTimer || 0) > 0) {
             const enemy = getNearestEnemy(p);
             if (enemy) {
@@ -4762,7 +4975,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                 const immune = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
                                 if (initialStatus && immune.includes(initialStatus)) {
                                     statusToApply = undefined; // Immune
-                                    hitEntity.statusLabel = "无效!";
+                                    hitEntity.statusLabel = "免疫!";
                                     spawnParticles(hitEntity.pos, 5, '#9ca3af', 2);
                                 }
                             }
@@ -4803,7 +5016,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                 applyStatus(hitEntity, 'disarm', stats.expelliarmusDuration / 1000, p.ownerId);
                                 hitEntity.statusLabel = "缴械!";
                             } else {
-                                hitEntity.statusLabel = "无效!";
+                                hitEntity.statusLabel = "免疫!";
                             }
 
                             spawnParticles(hitEntity.pos, 15, p.color, 6);
@@ -5119,38 +5332,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 p.secondarySkillMaxCooldown = CHAR_STATS[CharacterType.MAGIC].armorCooldown / 1000;
             }
 
-            // 光灵球效果
+            // 光灵球效果 - 持续回血（粒子效果现在由 lightSpirits 实体处理）
             if (p.lightSpiritTimer && p.lightSpiritTimer > 0) {
                 p.lightSpiritTimer -= dt;
-                // 持续回血ds
+                // 持续回血
                 p.hp = Math.min(p.hp + stats.lightSpiritHealRate * dt, p.maxHp);
-
-                // 生成光灵球粒子表示存在
-                if (Math.random() < 0.3) {
-                    const angle = (performance.now() / 500) % (Math.PI * 2);
-                    const orbitDist = 60;
-                    stateRef.current.particles.push({
-                        id: Math.random().toString(),
-                        pos: {
-                            x: p.pos.x + Math.cos(angle) * orbitDist,
-                            y: p.pos.y + Math.sin(angle) * orbitDist
-                        },
-                        vel: { x: (Math.random() - 0.5) * 2, y: -1 - Math.random() },
-                        life: 0.4,
-                        maxLife: 0.4,
-                        color: '#f8fafc',
-                        size: 6 + Math.random() * 4,
-                    });
-                }
             }
 
-            // 控制免疫计时
+            // 控制免疫计时器递减
             if (p.ccImmuneTimer && p.ccImmuneTimer > 0) {
                 p.ccImmuneTimer -= dt;
-                // 清除所有控制效果
-                p.stunTimer = 0; p.rootTimer = 0; p.slowTimer = 0;
-                p.fearTimer = 0; p.silenceTimer = 0; p.disarmTimer = 0;
-                p.sleepTimer = 0; p.petrifyTimer = 0;
             }
         }
     };
@@ -5923,6 +6114,34 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.textAlign = 'center';
                     ctx.fillText('⚠', g.pos.x, g.pos.y);
                 }
+
+                // 《呼神护卫》银白色冲击波
+                if (g.type === 'PATRONUS_WAVE') {
+                    const lifeRatio = g.life / g.maxLife;
+                    const expandRatio = 1 - lifeRatio; // 从小到大扩展
+                    const currentRadius = g.radius + expandRatio * 150; // 扩展动画
+
+                    ctx.save();
+
+                    // 外圈发光效果
+                    ctx.shadowColor = '#f8fafc';
+                    ctx.shadowBlur = 20;
+
+                    // 银白色冲击波环
+                    ctx.strokeStyle = `rgba(248, 250, 252, ${lifeRatio * 0.8})`;
+                    ctx.lineWidth = 8 + (1 - lifeRatio) * 4;
+                    ctx.beginPath();
+                    ctx.arc(g.pos.x, g.pos.y, currentRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    // 内圈淡色填充
+                    ctx.fillStyle = `rgba(248, 250, 252, ${lifeRatio * 0.15})`;
+                    ctx.beginPath();
+                    ctx.arc(g.pos.x, g.pos.y, currentRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.restore();
+                }
             });
 
             // [High Priority Visuals] Start Beacon (Rendered AFTER obstacles)
@@ -6010,6 +6229,46 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.fillStyle = '#34d399';
                     ctx.fillRect(-10, -15, 20 * hpPct, 3);
                 }
+                ctx.restore();
+            });
+
+            // 光灵球守护神渲染
+            state.lightSpirits.forEach(spirit => {
+                ctx.save();
+                ctx.translate(spirit.pos.x, spirit.pos.y);
+
+                // 根据状态选择颜色
+                const isCharging = spirit.state === 'CHARGING';
+                const baseColor = isCharging ? '#fef08a' : '#f8fafc'; // 冲撞时金色，否则银白
+                const glowColor = isCharging ? '#facc15' : '#e2e8f0';
+
+                // 发光效果
+                ctx.shadowColor = baseColor;
+                ctx.shadowBlur = isCharging ? 30 : 20;
+
+                // 外圈光晕
+                const pulse = Math.sin(Date.now() / 100) * 0.2 + 0.8;
+                ctx.fillStyle = `rgba(${isCharging ? '254, 240, 138' : '248, 250, 252'}, ${0.3 * pulse})`;
+                ctx.beginPath();
+                ctx.arc(0, 0, spirit.radius * 2, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 主体光球
+                const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, spirit.radius);
+                gradient.addColorStop(0, baseColor);
+                gradient.addColorStop(0.7, glowColor);
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(0, 0, spirit.radius * 1.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 核心亮点
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(0, 0, spirit.radius * 0.5, 0, Math.PI * 2);
+                ctx.fill();
+
                 ctx.restore();
             });
 

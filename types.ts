@@ -48,6 +48,27 @@ export interface Drone extends GameEntity {
   isDocked?: boolean; // Flag for removal logic
 }
 
+// 光灵球守护神 (呼神护卫召唤物)
+export interface LightSpirit {
+  id: string;
+  ownerId: string;        // 所属白魔法球玩家ID
+  pos: Vector2;
+  vel: Vector2;
+  life: number;           // 剩余生存时间（秒）
+  maxLife: number;
+  radius: number;
+  orbitAngle: number;     // 当前环绕角度
+
+  // 冲撞行为状态
+  state: 'ORBITING' | 'CHARGING' | 'RETURNING';
+  targetId?: string;      // 当前冲撞目标ID
+  chargeStartPos?: Vector2;  // 冲撞起点
+  chargeEndPos?: Vector2;    // 冲撞终点
+  chargeProgress?: number;   // 冲撞进度 (0-1)
+  cooldown: number;       // 冲撞CD
+  hitTargets: string[];   // 本次冲撞已命中的目标（防止重复击中）
+}
+
 export interface PlayerState extends GameEntity {
   type: CharacterType;
   teamId: number;
@@ -299,6 +320,7 @@ export interface GameState {
   particles: Particle[];
   obstacles: Obstacle[];
   drones: Drone[]; // Added Drones array
+  lightSpirits: LightSpirit[]; // 光灵球守护神数组
   floatingTexts: FloatingText[]; // Added for status text
   camera: Vector2;
   screenShakeTimer?: number;

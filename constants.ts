@@ -232,6 +232,15 @@ export const CHAR_STATS = {
     lightSpiritDuration: 5000,
     lightSpiritHealRate: 15,   // HP/秒
     lightSpiritMpRegenMultiplier: 2,
+    // 光灵球守护神冲撞参数
+    lightSpiritRadius: 15,           // 光灵球半径
+    lightSpiritSpeed: 25,            // 极快的冲撞速度
+    lightSpiritOrbitRadius: 80,      // 环绕半径
+    lightSpiritOrbitSpeed: 4,        // 环绕速度（弧度/秒）
+    lightSpiritChargeRange: 500,     // 检测敌人范围
+    lightSpiritChargeKnockback: 500, // 冲撞击退力度
+    lightSpiritChargeCooldown: 0.4,  // 每次冲撞后的CD
+    lightSpiritReturnSpeed: 20,      // 返回速度
     // 《阿瓦达啃大瓜》(黑): 蓄力贯穿光束
     avadaMaxDamage: 2500,      // 最大伤害(需低血量+高MP)
     avadaMpDrainRate: 80,      // 蓄力时MP消耗速度/秒
