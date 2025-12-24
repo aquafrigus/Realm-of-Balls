@@ -3502,6 +3502,69 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             ai.aiSkipSkills = false;
         }
 
+        // [通用反卡死系统] Universal Unstuck System for All AI
+        // 检测AI是否长时间停留在同一位置
+        if (!ai.lastPos) ai.lastPos = { ...ai.pos };
+        const distMoved = Utils.dist(ai.pos, ai.lastPos);
+        ai.lastPos = { ...ai.pos };
+
+        if (distMoved < 0.5) {
+            ai.stuckTimer = (ai.stuckTimer || 0) + dt;
+        } else {
+            ai.stuckTimer = Math.max(0, (ai.stuckTimer || 0) - dt);
+        }
+
+        // 触发绕路逻辑
+        if ((ai.stuckTimer || 0) > 1.5 && (ai.unstuckTimer || 0) <= 0) {
+            ai.unstuckTimer = 1.0 + Math.random() * 0.5; // 1.0-1.5秒绕路时间
+
+            // 多方向探测 (8个方向,45度间隔)
+            let bestDir = { x: 0, y: 0 };
+            let bestScore = -Infinity;
+            const target = getNearestEnemy(ai);
+
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2;
+                const testDir = { x: Math.cos(angle), y: Math.sin(angle) };
+                const testPoint = Utils.add(ai.pos, Utils.mult(testDir, 100));
+
+                let score = 0;
+
+                // 1. 避开障碍物 (70%权重)
+                let minObstacleDist = Infinity;
+                for (const obs of stateRef.current.obstacles) {
+                    const centerX = obs.x + obs.width / 2;
+                    const centerY = obs.y + obs.height / 2;
+                    const d = Utils.dist(testPoint, { x: centerX, y: centerY });
+                    minObstacleDist = Math.min(minObstacleDist, d);
+                }
+                score += minObstacleDist * 0.7;
+
+                // 2. 朝向目标 (30%权重)
+                if (target) {
+                    const toTarget = Utils.normalize(Utils.sub(target.pos, ai.pos));
+                    const dotProduct = testDir.x * toTarget.x + testDir.y * toTarget.y;
+                    score += dotProduct * 100 * 0.3;
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestDir = testDir;
+                }
+            }
+
+            ai.unstuckDir = bestDir;
+            ai.stuckTimer = 0;
+        }
+
+        // 执行绕路
+        if ((ai.unstuckTimer || 0) > 0) {
+            ai.unstuckTimer! -= dt;
+            const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[ai.type].speed;
+            ai.vel = Utils.add(ai.vel, Utils.mult(ai.unstuckDir!, accel * dt * 60));
+            return; // 绕路期间跳过正常AI逻辑
+        }
+
         // [新增] AI 移动变数更新 / AI Movement Variance Update
         if (ai.aiStrafeTimer === undefined) ai.aiStrafeTimer = 0;
         if (ai.aiChangeDistTimer === undefined) ai.aiChangeDistTimer = 0;
@@ -3828,48 +3891,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
         }
         else if (ai.type === CharacterType.PYRO) {
-            // Pyro Unstuck Logic
-            if (!ai.lastPos) ai.lastPos = ai.pos;
-            const distMoved = Utils.dist(ai.pos, ai.lastPos);
-            ai.lastPos = ai.pos;
-            if (distMoved < 0.5) ai.stuckTimer = (ai.stuckTimer || 0) + dt;
-            else ai.stuckTimer = Math.max(0, (ai.stuckTimer || 0) - dt);
-
-            if ((ai.stuckTimer || 0) > 1.5 && (ai.unstuckTimer || 0) <= 0) {
-                ai.unstuckTimer = 1.0;
-                let bestDir = { x: 0, y: 0 };
-                let bestScore = -Infinity;
-                const waterObstacles = stateRef.current.obstacles.filter(o => o.type === 'WATER');
-
-                for (let i = 0; i < 8; i++) {
-                    const angle = (i / 8) * Math.PI * 2;
-                    const testDir = { x: Math.cos(angle), y: Math.sin(angle) };
-                    const testPoint = Utils.add(ai.pos, Utils.mult(testDir, 100));
-
-                    let minWaterDist = Infinity;
-                    for (const water of waterObstacles) {
-                        const centerX = water.x + water.width / 2;
-                        const centerY = water.y + water.height / 2;
-                        const d = Utils.dist(testPoint, { x: centerX, y: centerY });
-                        minWaterDist = Math.min(minWaterDist, d);
-                    }
-
-                    if (minWaterDist > bestScore) {
-                        bestScore = minWaterDist;
-                        bestDir = testDir;
-                    }
-                }
-
-                ai.unstuckDir = bestDir;
-                ai.stuckTimer = 0;
-            }
-            if ((ai.unstuckTimer || 0) > 0) {
-                ai.unstuckTimer! -= dt;
-                const accel = PHYSICS.ACCELERATION_SPEED * CHAR_STATS[ai.type].speed;
-                ai.vel = Utils.add(ai.vel, Utils.mult(ai.unstuckDir!, accel * dt * 60));
-                return;
-            }
-
             // Aiming
             const { range: aiRange, angle: aiAngle } = calculatePyroShape(distToTarget + 40);
             ai.currentWeaponRange = aiRange;
@@ -3882,7 +3903,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 ai.aimAngle = Math.atan2(moveDir.y, moveDir.x);
             }
 
-            // Movement adjustment (Strafe/Kiting)
             // Movement adjustment (Strafe/Kiting)
             if (!evasionDir && target) {
                 const range = CHAR_STATS[CharacterType.PYRO].flamethrowerRange;
