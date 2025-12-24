@@ -2855,6 +2855,25 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 handleMagmaInteraction(p1, deltaTime);
             }
 
+            // [新增] 火焰球磁力吸引效果 (促进碰撞)
+            if (p1.type === CharacterType.PYRO) {
+                state.players.forEach(p2 => {
+                    if (p2.id === p1.id || p2.isDead || p2.type !== CharacterType.PYRO) return;
+
+                    const dist = Utils.dist(p1.pos, p2.pos);
+                    const attractionRange = 200; // 吸引范围
+
+                    if (dist < attractionRange && dist > p1.radius + p2.radius) {
+                        // 计算吸引力强度 (距离越近,吸引力越强)
+                        const attractionStrength = (1 - dist / attractionRange) * 0.4; // 加速度
+                        const direction = Utils.normalize(Utils.sub(p2.pos, p1.pos));
+
+                        // 对双方施加向心加速度
+                        p1.vel = Utils.add(p1.vel, Utils.mult(direction, attractionStrength));
+                    }
+                });
+            }
+
             // 玩家间碰撞 (Player vs Player) - 双重循环
             for (let j = i + 1; j < state.players.length; j++) {
                 const p2 = state.players[j];
@@ -2895,14 +2914,59 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     p1.vel = { x: v1Tan.x + normal.x * v1nFinal, y: v1Tan.y + normal.y * v1nFinal };
                     p2.vel = { x: v2Tan.x + normal.x * v2nFinal, y: v2Tan.y + normal.y * v2nFinal };
 
-                    // 撞击伤害 (仅对敌)
+                    // [新增] 火焰球特殊碰撞机制 (不区分敌我,一接触就触发)
+                    if (p1.type === CharacterType.PYRO && p2.type === CharacterType.PYRO) {
+                        const relativeVel = Math.abs(v1n - v2n);
+                        const baseDmg = Math.floor(relativeVel * 2);
+
+                        // 计算优势
+                        const v1Speed = Utils.mag(p1.vel);
+                        const v2Speed = Utils.mag(p2.vel);
+                        const speedAdvantage = v1Speed - v2Speed;
+
+                        const p1FuelRatio = (p1.fuel || 0) / (p1.maxFuel || 100);
+                        const p2FuelRatio = (p2.fuel || 0) / (p2.maxFuel || 100);
+                        const fuelAdvantage = p1FuelRatio - p2FuelRatio;
+
+                        const totalAdvantage = speedAdvantage + fuelAdvantage * 5;
+
+                        // 差异化伤害 (不区分敌我)
+                        const advantageDmg = Math.abs(totalAdvantage) * 10;
+                        const disadvantageDmg = Math.abs(totalAdvantage) * 3;
+
+                        if (totalAdvantage > 0) {
+                            // p1 优势
+                            takeDamage(p2, baseDmg + advantageDmg, p1.type, DamageType.PHYSICAL);
+                            takeDamage(p1, baseDmg + disadvantageDmg, p2.type, DamageType.PHYSICAL);
+                        } else {
+                            // p2 优势
+                            takeDamage(p1, baseDmg + advantageDmg, p2.type, DamageType.PHYSICAL);
+                            takeDamage(p2, baseDmg + disadvantageDmg, p1.type, DamageType.PHYSICAL);
+                        }
+
+                        // 碰撞爆炸效果
+                        const collisionPoint = {
+                            x: (p1.pos.x + p2.pos.x) / 2,
+                            y: (p1.pos.y + p2.pos.y) / 2
+                        };
+                        createExplosion(state, collisionPoint, 80, 100, 'collision', false, true);
+
+                        // 额外视觉效果
+                        spawnParticles(collisionPoint, 20, '#f97316', 10, 1.5);
+                        Sound.playHit();
+                    }
+
+                    // 撞击伤害 (仅对敌,非火焰球)
                     const relativeVel = Math.abs(v1n - v2n);
                     if (relativeVel > 8 && p1.teamId !== p2.teamId) {
-                        const baseDmg = Math.floor(relativeVel * 2);
-                        takeDamage(p1, baseDmg, p2.type, DamageType.PHYSICAL);
-                        takeDamage(p2, baseDmg, p1.type, DamageType.PHYSICAL);
-                        Sound.playHit();
-                        spawnParticles(Utils.add(p1.pos, Utils.mult(normal, -p1.radius)), 10, '#ffffff');
+                        // 火焰球已在上面处理,这里只处理其他角色
+                        if (!(p1.type === CharacterType.PYRO && p2.type === CharacterType.PYRO)) {
+                            const baseDmg = Math.floor(relativeVel * 2);
+                            takeDamage(p1, baseDmg, p2.type, DamageType.PHYSICAL);
+                            takeDamage(p2, baseDmg, p1.type, DamageType.PHYSICAL);
+                            Sound.playHit();
+                            spawnParticles(Utils.add(p1.pos, Utils.mult(normal, -p1.radius)), 10, '#ffffff');
+                        }
                     }
                 }
             }
