@@ -190,6 +190,12 @@ export interface PlayerState extends GameEntity {
   magicShieldShakeTimer?: number;  // 护盾受击抖动计时器
   magicShieldDamageLevel?: number; // 护盾破损等级 (0-4)
 
+  // 移形换影动画状态
+  apparitionPhase?: 'DISAPPEARING' | 'FLYING' | 'APPEARING' | 'NONE';
+  apparitionTimer?: number;       // 当前阶段计时器
+  apparitionStartPos?: Vector2;   // 起点位置
+  apparitionEndPos?: Vector2;     // 终点位置
+
   // AI specific
   lastPos?: Vector2;
   stuckTimer?: number;

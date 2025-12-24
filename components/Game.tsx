@@ -855,6 +855,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             magicUltChargeTime: 0,
             magicChargeTimer: 0,
             ccImmuneTimer: 0,
+            apparitionPhase: 'NONE',
+            apparitionTimer: 0,
 
             // AI defaults
             lastPos: pos,
@@ -1763,9 +1765,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             });
         }
         else {
-            // 《移形换影》- 解除控制+闪现
+            // 《移形换影》- 解除控制+闪现 (带动画)
             // 不检查 canUseSecondarySkill，只检查沉默
             if (p.silenceTimer > 0) return;
+            // 如果已经在传送动画中，不允许重复施放
+            if (p.apparitionPhase && p.apparitionPhase !== 'NONE') return;
+
             // Cost: 100 MP
             const cost = (stats as any).blinkManaCost || 100;
 
@@ -1775,26 +1780,25 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 解除所有控制 (Cleanse)
             clearControlEffects(p);
 
-            // 生成闪现特效（起点）
-            spawnParticles(p.pos, 20, p.magicForm === 'WHITE' ? '#f8fafc' : '#1f2937', 6, 0.5);
-            Sound.playSkill('BLINK'); // Create if missing or map to closest
-
-            // 计算最安全位置并闪现
+            // 计算最安全位置
             const safePos = calculateSafestPosition(p);
-            p.pos = safePos;
-            // Immediate CD
+
+            // 启动消失阶段动画
+            p.apparitionPhase = 'DISAPPEARING';
+            p.apparitionTimer = 1.0;  // 消失阶段持续1秒
+            p.apparitionStartPos = { ...p.pos };
+            p.apparitionEndPos = safePos;
+
+            // 立即进入CD
             const blinkCD = (stats as any).blinkCooldown / 1000;
             p.secondarySkillCooldown = blinkCD;
             p.secondarySkillMaxCooldown = blinkCD;
 
-            // 生成闪现特效（终点）
-            spawnParticles(p.pos, 25, p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e', 8, 0.8);
-
-            // Add slight invulnerability buffer? (Optional, maybe not requested, so skipping)
+            // 播放音效
+            Sound.playSkill('BLINK');
 
             p.statusLabel = MAGIC_SPELL_LINES.blink + '!';
             p.statusLabelColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
-
         }
     };
 
@@ -3018,6 +3022,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         state.players.forEach(p => updateStatus(p, deltaTime));
 
+        // 更新移形换影动画
+        state.players.forEach(p => updateApparitionAnimation(p, deltaTime));
+
         // [集中管理] 全局状态飘字系统
         state.players.forEach(p => {
             // 1. 初始化追踪字段 (用于 UI/飘字)
@@ -3154,6 +3161,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const handlePlayerInput = (p: PlayerState, dt: number) => {
+        // 移形换影动画期间禁止其他输入
+        if (p.apparitionPhase && p.apparitionPhase !== 'NONE') {
+            return;
+        }
+
         if (p.type === CharacterType.MAGIC && keysRef.current['MouseRight']) {
             handleMagicProtection(p);
         }
@@ -3515,6 +3527,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const handleAI = (ai: PlayerState, dt: number) => {
+        // 移形换影动画期间暂停AI行动
+        if (ai.apparitionPhase && ai.apparitionPhase !== 'NONE') {
+            return;
+        }
+
         // AI Status Checks
         if (ai.stunTimer > 0 || ai.sleepTimer > 0 || (ai.petrifyTimer || 0) > 0) {
             ai.vel = Utils.mult(ai.vel, 0.8);
@@ -5312,6 +5329,154 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         });
     };
 
+    // 移形换影动画更新
+    const updateApparitionAnimation = (p: PlayerState, dt: number) => {
+        if (!p.apparitionPhase || p.apparitionPhase === 'NONE') return;
+
+        p.apparitionTimer = (p.apparitionTimer || 0) - dt;
+        const themeColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
+        const trailColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
+        const coreColor = p.magicForm === 'WHITE' ? '#ffffff' : '#1f2937';
+
+        if (p.apparitionPhase === 'DISAPPEARING') {
+            // 消失阶段：模拟黑洞吞噬效果
+            const progress = 1 - (p.apparitionTimer || 0) / 1.0; // 0 -> 1
+
+            // 生成向球心收缩的粒子（像被吸入黑洞）
+            const particleCount = Math.floor(2 + Math.random() * 2); // 每帧生成2-3个粒子
+            for (let i = 0; i < particleCount; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = p.radius * (2.5 - progress * 2) * (0.5 + Math.random() * 0.5);
+                const particlePos = Utils.add(p.apparitionStartPos!, {
+                    x: Math.cos(angle) * dist,
+                    y: Math.sin(angle) * dist
+                });
+                const toCenter = Utils.sub(p.apparitionStartPos!, particlePos);
+                const speed = 3 + progress * 5;
+                const vel = Utils.mult(Utils.normalize(toCenter), speed);
+
+                stateRef.current.particles.push({
+                    id: Math.random().toString(),
+                    pos: particlePos,
+                    vel: vel,
+                    life: 0.3,
+                    maxLife: 0.3,
+                    color: Math.random() > 0.3 ? themeColor : coreColor,
+                    size: 3 + Math.random() * 3,
+                    drag: 0.98,
+                    type: 'circle'
+                });
+            }
+
+            // 添加中心漩涡效果
+            if (Math.random() < 0.5) {
+                const spiralAngle = performance.now() * 0.01 + Math.random() * Math.PI;
+                const spiralDist = p.radius * (1 - progress) * 0.5;
+                stateRef.current.particles.push({
+                    id: Math.random().toString(),
+                    pos: Utils.add(p.apparitionStartPos!, {
+                        x: Math.cos(spiralAngle) * spiralDist,
+                        y: Math.sin(spiralAngle) * spiralDist
+                    }),
+                    vel: { x: 0, y: 0 },
+                    life: 0.1,
+                    maxLife: 0.1,
+                    color: themeColor,
+                    size: 3 + progress * 5,
+                    type: 'circle'
+                });
+            }
+
+            // 阶段切换
+            if (p.apparitionTimer! <= 0) {
+                p.apparitionPhase = 'FLYING';
+                p.apparitionTimer = 1.0; // 飞行阶段1秒
+                // 播放传送开始音效
+                Sound.playSkill('BLINK');
+            }
+        }
+        else if (p.apparitionPhase === 'FLYING') {
+            // 飞行阶段：闪电形态飞行
+            const progress = 1 - (p.apparitionTimer || 0) / 1.0; // 0 -> 1
+
+            // 使用 easeInOutCubic 缓动使移动更流畅
+            const easedProgress = progress < 0.5
+                ? 4 * progress * progress * progress
+                : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+
+            // 更新位置
+            const startPos = p.apparitionStartPos!;
+            const endPos = p.apparitionEndPos!;
+            p.pos = {
+                x: startPos.x + (endPos.x - startPos.x) * easedProgress,
+                y: startPos.y + (endPos.y - startPos.y) * easedProgress
+            };
+
+            // 计算飞行方向
+            const dir = Utils.normalize(Utils.sub(endPos, startPos));
+            const perpDir = { x: -dir.y, y: dir.x }; // 垂直方向用于颤动效果
+
+            // 生成闪电拖尾粒子
+            const trailCount = Math.floor(2 + Math.random() * 2); // 每帧生成2-3个粒子
+            for (let i = 0; i < trailCount; i++) {
+                const tremor = (Math.random() - 0.5) * 15;
+                const trailPos = Utils.add(p.pos, Utils.mult(perpDir, tremor));
+                const trailVel = Utils.mult(dir, -3 - Math.random() * 5);
+                stateRef.current.particles.push({
+                    id: Math.random().toString(),
+                    pos: trailPos,
+                    vel: {
+                        x: trailVel.x + (Math.random() - 0.5) * 2,
+                        y: trailVel.y + (Math.random() - 0.5) * 2
+                    },
+                    life: 0.25,
+                    maxLife: 0.3,
+                    color: Math.random() > 0.2 ? trailColor : '#ffffff',
+                    size: 3 + Math.random() * 4,
+                    drag: 0.95,
+                    type: 'circle'
+                });
+            }
+
+            // 生成电弧效果
+            if (Math.random() < 0.4) {
+                const arcOffset = (Math.random() - 0.5) * 40;
+                const arcPos = Utils.add(p.pos, Utils.mult(perpDir, arcOffset));
+                stateRef.current.particles.push({
+                    id: Math.random().toString(),
+                    pos: arcPos,
+                    vel: { x: (Math.random() - 0.5) * 8, y: (Math.random() - 0.5) * 8 },
+                    life: 0.1,
+                    maxLife: 0.1,
+                    color: '#ffffff',
+                    size: 1 + Math.random() * 2,
+                    type: 'circle'
+                });
+            }
+
+            // 阶段切换
+            if (p.apparitionTimer! <= 0) {
+                p.apparitionPhase = 'APPEARING';
+                p.apparitionTimer = 0.4;
+                p.pos = { ...endPos };
+
+                // 播放到达音效和屏幕震动
+                Sound.playSkill('BLINK');
+                stateRef.current.screenShakeTimer = 0.2;
+                stateRef.current.screenShakeIntensity = 100;
+
+                // 一次性生成爆发粒子
+                spawnParticles(p.pos, 30, themeColor, 12, 0.6);
+            }
+        }
+        else if (p.apparitionPhase === 'APPEARING') {
+            // 出现阶段：等待动画结束（粒子已在阶段切换时通过spawnParticles生成）
+            if (p.apparitionTimer! <= 0) {
+                p.apparitionPhase = 'NONE';
+            }
+        }
+    };
+
     const spawnParticles = (pos: Vector2, count: number, color: string, speed = 2, life = 0.5, drag = 1.0) => {
         for (let i = 0; i < count; i++) {
             const angle = Math.random() * Math.PI * 2;
@@ -5493,8 +5658,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (!Number.isFinite(targetY)) targetY = state.camera.y;
 
         // Smooth Camera Follow
-        state.camera.x += (targetX - state.camera.x) * 0.08;
-        state.camera.y += (targetY - state.camera.y) * 0.08;
+        // 在移形换影飞行阶段使用更快的追踪速度
+        let cameraSpeed = 0.08;
+        if (!human.isDead && human.apparitionPhase === 'FLYING') {
+            cameraSpeed = 0.25; // 更快的追踪确保不丢失视野
+        }
+        state.camera.x += (targetX - state.camera.x) * cameraSpeed;
+        state.camera.y += (targetY - state.camera.y) * cameraSpeed;
 
         // [Safety] Final camera check
         if (!Number.isFinite(state.camera.x)) state.camera.x = 0;
@@ -6344,6 +6514,103 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     return;
                 } else if (p.type === CharacterType.MAGIC) {
                     // --- RENDER MAGIC BALL & WAND ---
+
+                    const themeColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
+
+                    // 特殊渲染：移形换影动画
+                    if (p.apparitionPhase === 'DISAPPEARING') {
+                        // 消失阶段：球体逐渐缩小 + 黑洞吸入效果
+                        const progress = 1 - (p.apparitionTimer || 0) / 1.0;
+                        const shrinkRatio = 1 - progress * 0.95; // 最终缩小到5%
+                        const currentRadius = p.radius * shrinkRatio;
+
+                        // 绘制漩涡效果
+                        ctx.save();
+                        const spiralTime = Date.now() / 100;
+                        ctx.rotate(spiralTime * 0.5);
+
+                        // 外层漩涡
+                        for (let i = 0; i < 3; i++) {
+                            const spiralProgress = (i / 3 + spiralTime * 0.1) % 1;
+                            const spiralR = currentRadius * (1 + spiralProgress * 2);
+                            ctx.strokeStyle = themeColor + Math.floor((1 - spiralProgress) * 100).toString(16).padStart(2, '0');
+                            ctx.lineWidth = 2;
+                            ctx.beginPath();
+                            ctx.arc(0, 0, spiralR, 0, Math.PI * 1.5);
+                            ctx.stroke();
+                        }
+                        ctx.restore();
+
+                        // 中心核心
+                        ctx.fillStyle = p.color;
+                        ctx.shadowColor = themeColor;
+                        ctx.shadowBlur = 20 * (1 - progress);
+                        ctx.beginPath();
+                        ctx.arc(0, 0, Math.max(2, currentRadius), 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.shadowBlur = 0;
+
+                        ctx.restore(); // 恢复外层ctx.save()
+                        return;
+                    }
+                    else if (p.apparitionPhase === 'FLYING') {
+                        // 飞行阶段：闪电形态
+                        const dir = Utils.normalize(Utils.sub(p.apparitionEndPos!, p.apparitionStartPos!));
+                        const flyAngle = Math.atan2(dir.y, dir.x);
+
+                        ctx.save();
+                        ctx.rotate(flyAngle);
+
+                        // 发光核心
+                        const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, p.radius * 2);
+                        gradient.addColorStop(0, '#ffffff');
+                        gradient.addColorStop(0.3, themeColor);
+                        gradient.addColorStop(0.7, themeColor + '88');
+                        gradient.addColorStop(1, 'transparent');
+
+                        ctx.shadowColor = themeColor;
+                        ctx.shadowBlur = 30;
+                        ctx.fillStyle = gradient;
+                        ctx.beginPath();
+                        ctx.arc(0, 0, p.radius * 1.5, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // 闪电拖尾
+                        ctx.strokeStyle = themeColor;
+                        ctx.lineWidth = 4;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(0, 0);
+
+                        // 锯齿状闪电拖尾
+                        const tailLength = p.radius * 5;
+                        const segments = 8;
+                        for (let i = 1; i <= segments; i++) {
+                            const x = -i * (tailLength / segments);
+                            const y = (Math.random() - 0.5) * 15;
+                            ctx.lineTo(x, y);
+                        }
+                        ctx.stroke();
+
+                        // 电弧分支
+                        ctx.lineWidth = 2;
+                        ctx.strokeStyle = '#ffffff';
+                        for (let b = 0; b < 3; b++) {
+                            const branchX = -(tailLength / segments) * (2 + b * 2);
+                            const branchDir = Math.random() > 0.5 ? 1 : -1;
+                            ctx.beginPath();
+                            ctx.moveTo(branchX, 0);
+                            ctx.lineTo(branchX - 10, branchDir * 15);
+                            ctx.lineTo(branchX - 20, branchDir * 10);
+                            ctx.stroke();
+                        }
+
+                        ctx.shadowBlur = 0;
+                        ctx.restore();
+
+                        ctx.restore(); // 恢复外层ctx.save()
+                        return;
+                    }
 
                     const statusInfo = getStatusInfo(p);
                     if (statusInfo) ctx.fillStyle = statusInfo.color;
