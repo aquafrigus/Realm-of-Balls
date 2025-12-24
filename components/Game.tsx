@@ -1667,7 +1667,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     // 右键技能 - 随机保命咒语
-    // 右键技能 - 随机保命咒语
     const handleMagicProtection = (p: PlayerState) => {
         if (!canUseSecondarySkill(p)) return;
         if (p.secondarySkillCooldown > 0) return;
@@ -1675,7 +1674,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        let spell = 2;//const spell = Math.floor(Math.random() * 3);
+        let spell = 0;
+        // const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
             // 《除你武器》
@@ -1714,8 +1714,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             Sound.playShot('MAGIC');
             p.statusLabel = MAGIC_SPELL_LINES.disarm + '!';
-            // 瞬间进入CD: 5s
-            p.secondarySkillCooldown = 5;
+            // 瞬间进入CD
+            const expelliarmusCD = stats.expelliarmusCooldown / 1000;
+            p.secondarySkillCooldown = expelliarmusCD;
+            p.secondarySkillMaxCooldown = expelliarmusCD;
         }
         else if (spell === 1) {
             // 《盔甲护身》- 护盾
@@ -1735,7 +1737,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // Visuals & Sound
             spawnParticles(p.pos, 15, '#c0c0c0', 5, 0.8);
             Sound.playSkill('SHIELD_ACTIVATE');
-            p.secondarySkillCooldown = 0.5; // Shared internal min CD
 
             // [New] Knockback nearby units on activation
             const shieldR = p.radius + 30;
@@ -1772,8 +1773,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 计算最安全位置并闪现
             const safePos = calculateSafestPosition(p);
             p.pos = safePos;
-            // Immediate CD: 9 seconds
-            p.secondarySkillCooldown = 9.0;
+            // Immediate CD
+            const blinkCD = (stats as any).blinkCooldown / 1000;
+            p.secondarySkillCooldown = blinkCD;
+            p.secondarySkillMaxCooldown = blinkCD;
 
             // 生成闪现特效（终点）
             spawnParticles(p.pos, 25, p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e', 8, 0.8);
@@ -2520,6 +2523,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 p.magicShieldHp = 0;
                 p.magicShieldTimer = 0;
                 p.secondarySkillCooldown = stats.armorCooldown / 1000;
+                p.secondarySkillMaxCooldown = stats.armorCooldown / 1000;
 
                 // [New] Grand Shatter Effect (Glass Shards + Sound)
                 spawnShards(p.pos, 60, themeColor);
@@ -2861,11 +2865,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     if (p2.id === p1.id || p2.isDead || p2.type !== CharacterType.PYRO) return;
 
                     const dist = Utils.dist(p1.pos, p2.pos);
-                    const attractionRange = 200; // 吸引范围
+                    const attractionRange = 300; // 吸引范围
 
                     if (dist < attractionRange && dist > p1.radius + p2.radius) {
                         // 计算吸引力强度 (距离越近,吸引力越强)
-                        const attractionStrength = (1 - dist / attractionRange) * 0.4; // 加速度
+                        const attractionStrength = (1 - dist / attractionRange) * 0.5; // 加速度
                         const direction = Utils.normalize(Utils.sub(p2.pos, p1.pos));
 
                         // 对双方施加向心加速度
@@ -5081,6 +5085,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 p.magicShieldHp = 0;
                 // CD triggers on expiration
                 p.secondarySkillCooldown = CHAR_STATS[CharacterType.MAGIC].armorCooldown / 1000;
+                p.secondarySkillMaxCooldown = CHAR_STATS[CharacterType.MAGIC].armorCooldown / 1000;
             }
 
             // 光灵球效果

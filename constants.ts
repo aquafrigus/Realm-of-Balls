@@ -213,12 +213,12 @@ export const CHAR_STATS = {
     expelliarmusManaCost: 100,
     expelliarmusRange: 80,
     expelliarmusDuration: 5000,
-    expelliarmusCooldown: 5000,
+    expelliarmusCooldown: 3000,
     // 《盔甲护身》
     armorManaCost: 100,
     armorShieldHp: 2000,
     armorDuration: 5000,
-    armorCooldown: 7000,
+    armorCooldown: 6000,
     // 《移形换影》
     blinkManaCost: 100,
     blinkCooldown: 9000,
