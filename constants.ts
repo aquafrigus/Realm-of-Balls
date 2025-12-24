@@ -241,7 +241,7 @@ export const CHAR_STATS = {
 export const DEFAULT_HAZARD_AFFINITY = {
   SKILL: 1,
   WATER: 0,
-  MAGMA: 0,
+  MAGMA: 1,
   WALL: 0,
 };
 
@@ -251,10 +251,15 @@ export const HAZARD_AFFINITY: Partial<Record<CharacterType, Partial<typeof DEFAU
   },
   [CharacterType.MAGIC]: {
     WALL: -0.5,    // Safe spot preference (Blink can land here)
-    WATER: 0.1    // Slight penalty to avoid landing in water if possible
+    WATER: 0.1,    // Slight penalty to avoid landing in water if possible
+    MAGMA: 2.0,    // [修复] 高惩罚岩浆，避免移形换影落在岩浆里
   },
   [CharacterType.CAT]: {
-    MAGMA: 1,
+    WATER: -0.3,
+    MAGMA: 1.5,
+  },
+  [CharacterType.WUKONG]: {
+    MAGMA: 0.5,
   }
 };
 
