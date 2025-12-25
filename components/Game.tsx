@@ -4944,6 +4944,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     // 1. 检查撞到玩家
                     for (const pl of state.players) {
                         if (pl.id !== p.ownerId && !pl.isDead) {
+                            // [无人机友军伤害] 对于无人机子弹,检查是否为敌方单位
+                            if (p.projectileType === 'DRONE_SHOT') {
+                                // 找到无人机的主人
+                                const droneOwner = state.players.find(owner => owner.id === p.ownerId);
+                                // 只有当目标是敌方单位时才碰撞(不同队伍或没有队伍信息)
+                                if (droneOwner && droneOwner.teamId === pl.teamId) {
+                                    continue; // 跳过友方单位,子弹穿透
+                                }
+                            }
+
                             // [New] Dynamic collision radius for Magic Shield
                             const effectiveRadius = (pl.magicShieldHp && pl.magicShieldHp > 0) ? (pl.radius + 30) : pl.radius;
                             if (Utils.dist(p.pos, pl.pos) < effectiveRadius + p.radius) {
@@ -4957,8 +4967,18 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 if (!hitEntity) {
                     for (const d of state.drones) {
 
-                        // 判定：非自己的无人机，且存活 - [友军伤害] 可攻击所有无人机
-                        const isValidTarget = d.ownerId !== p.ownerId;
+                        // 判定：非自己的无人机，且存活
+                        let isValidTarget = d.ownerId !== p.ownerId;
+
+                        // [无人机友军伤害] 对于无人机子弹,额外检查是否为敌方无人机
+                        if (isValidTarget && p.projectileType === 'DRONE_SHOT') {
+                            const droneOwner = state.players.find(owner => owner.id === p.ownerId);
+                            const targetDroneOwner = state.players.find(owner => owner.id === d.ownerId);
+                            // 如果双方主人是同一队伍,则跳过(友方无人机)
+                            if (droneOwner && targetDroneOwner && droneOwner.teamId === targetDroneOwner.teamId) {
+                                isValidTarget = false;
+                            }
+                        }
 
                         if (isValidTarget && d.hp > 0 && !d.isDocked) {
                             if (Utils.dist(p.pos, d.pos) < d.radius + p.radius) {
