@@ -149,6 +149,59 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         return (p.ccImmuneTimer || 0) > 0;
     };
 
+    // 统一免疫检查器：集中管理所有免疫机制
+    interface ImmunityResult {
+        isImmune: boolean;
+        reason?: 'mechanical' | 'fire' | 'shield' | 'invincible' | 'patronus';
+        particleColor?: string;
+        showLabel?: boolean;
+    }
+
+    const checkStatusImmunity = (
+        target: PlayerState | Drone | any,
+        statusType: string
+    ): ImmunityResult => {
+        // 1. 机械体免疫精神控制
+        if (isMechanical(target)) {
+            const immuneStatuses = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
+            if (immuneStatuses.includes(statusType)) {
+                return { isImmune: true, reason: 'mechanical', particleColor: '#9ca3af', showLabel: true };
+            }
+        }
+
+        // 2. 火焰免疫（Pyro 或 潮湿状态）
+        if (target.type === CharacterType.PYRO || target.isWet) {
+            if (['burn', 'burst'].includes(statusType)) {
+                return { isImmune: true, reason: 'fire' };
+            }
+        }
+
+        // 3. 护盾免疫所有负面 buff
+        if ((target.magicShieldHp || 0) > 0) {
+            // 检查是否为负面状态
+            const statusConfig = STATUS_CONFIG[statusType];
+            if (statusConfig && statusConfig.nature === 'negative') {
+                const color = target.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
+                return { isImmune: true, reason: 'shield', particleColor: color };
+            }
+        }
+
+        // 4. 无敌状态免疫所有负面 buff（猫猫复活后等）
+        if ((target.invincibleTimer || 0) > 0) {
+            const statusConfig = STATUS_CONFIG[statusType];
+            if (statusConfig && statusConfig.nature === 'negative') {
+                return { isImmune: true, reason: 'invincible', particleColor: '#fbbf24', showLabel: true };
+            }
+        }
+
+        // 5. 光灵球免疫硬控
+        if (hasCcImmunity(target) && HARD_CC_STATUS_TYPES.includes(statusType as any)) {
+            return { isImmune: true, reason: 'patronus', particleColor: '#f8fafc', showLabel: true };
+        }
+
+        return { isImmune: false };
+    };
+
     // 状态类型到属性名的映射（集中管理，避免重复定义）
     const STATUS_PROPERTY_MAP: Record<string, string> = {
         'fear': 'fearTimer',
@@ -1095,45 +1148,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const applyStatus = (target: PlayerState | Drone | any, type: string, duration: number, sourceId?: string, pos?: Vector2) => {
-        // Mechanical Immunities
-        if (isMechanical(target)) {
-            // Immutable list of statuses that machines are immune to
-            const immuneStatuses = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
-            if (immuneStatuses.includes(type)) {
-                return;
+        // 统一免疫检查
+        const immunity = checkStatusImmunity(target, type);
+        if (immunity.isImmune) {
+            if (immunity.particleColor) {
+                spawnParticles(target.pos, 5, immunity.particleColor, 3, 0.3);
             }
-        }
-
-        // Fire Immunities (Pyro or Wet targets)
-        if (target.type === CharacterType.PYRO || target.isWet) {
-            const fireStatuses = ['burn', 'burst'];
-            if (fireStatuses.includes(type)) {
-                return;
+            if (immunity.showLabel) {
+                target.statusLabel = "免疫!";
             }
-        }
-
-        // [New] Magic Shield Immunity Logic
-        // While shield is active, immune to all CC (Hard & Soft)
-        if ((target.magicShieldHp || 0) > 0) {
-            const ccTypes = [
-                'stun', 'root', 'silence', 'fear', 'charm', 'sleep',
-                'petrify', 'taunt', 'slow', 'disarm', 'blind'
-            ];
-            if (ccTypes.includes(type)) {
-                // Determine block color based on form
-                const blockColor = target.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
-                spawnParticles(target.pos, 3, blockColor, 2, 0.3);
-                return; // IMMUNE
-            }
-        }
-
-        // [New] 光灵球控制免疫（呼神护卫期间免疫硬控）
-        if (hasCcImmunity(target) && HARD_CC_STATUS_TYPES.includes(type as any)) {
-            // 银白色粒子表示免疫
-            spawnParticles(target.pos, 5, '#f8fafc', 3, 0.3);
-            // 飘字反馈
-            target.statusLabel = "免疫!";
-            return; // IMMUNE - 在施加时直接阻挡
+            return;
         }
 
         if (!target.statusHistory) target.statusHistory = [];
@@ -1721,7 +1745,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        let spell = 2;
+        let spell = 1;
         // const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
@@ -4617,8 +4641,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         if (e.hp <= 0) killEntity(e, p.id); // [新增] 召唤物死亡处理
                         if (Math.random() < 0.2) spawnParticles(e.pos, 1, '#ef4444', 2, 0.5);
                     } else {
-                        // Pyro and Wet targets are immune to fire statuses and exposure
-                        if (e.type !== CharacterType.PYRO && !e.isWet) {
+                        // 使用统一的免疫检查：火焰免疫检测
+                        const fireImmunity = checkStatusImmunity(e, 'burn');
+                        if (!fireImmunity.isImmune) {
                             const prevExposure = e.flameExposure || 0;
                             e.flameExposure = Math.min(100, (e.flameExposure || 0) + 0.5);
 
@@ -4970,19 +4995,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                             const initialStatus = statusToApply; // [New] Store for line triggering
 
-                            // 2. Mechanical Immunity Check (Unified)
-                            if (isMechanical(hitEntity)) {
-                                const immune = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
-                                if (initialStatus && immune.includes(initialStatus)) {
-                                    statusToApply = undefined; // Immune
-                                    hitEntity.statusLabel = "免疫!";
-                                    spawnParticles(hitEntity.pos, 5, '#9ca3af', 2);
-                                }
-                            }
-
+                            // 免疫检查现在由 applyStatus 中的 checkStatusImmunity 统一处理
                             // 3. Apply Status & Visuals
                             const owner = state.players.find(pl => pl.id === p.ownerId);
-                            const finalStatus = statusToApply; // Reference for line triggering
+                            const finalStatus = statusToApply;
 
                             if (finalStatus) {
                                 const duration = 0.5 + Math.random() * 2.5;
@@ -5012,12 +5028,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             const owner = state.players.find(pl => pl.id === p.ownerId);
                             const stats = CHAR_STATS[CharacterType.MAGIC];
 
-                            if (!isMechanical(hitEntity)) {
-                                applyStatus(hitEntity, 'disarm', stats.expelliarmusDuration / 1000, p.ownerId);
-                                hitEntity.statusLabel = "缴械!";
-                            } else {
-                                hitEntity.statusLabel = "免疫!";
-                            }
+                            // 免疫检查由 applyStatus 中的 checkStatusImmunity 统一处理
+                            applyStatus(hitEntity, 'disarm', stats.expelliarmusDuration / 1000, p.ownerId);
 
                             spawnParticles(hitEntity.pos, 15, p.color, 6);
 
@@ -5332,16 +5344,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 p.secondarySkillMaxCooldown = CHAR_STATS[CharacterType.MAGIC].armorCooldown / 1000;
             }
 
-            // 光灵球效果 - 持续回血（粒子效果现在由 lightSpirits 实体处理）
+            // 光灵球效果 - 持续回血
+            // 注：lightSpiritTimer 已在通用计时器区域递减（第 5149 行）
             if (p.lightSpiritTimer && p.lightSpiritTimer > 0) {
-                p.lightSpiritTimer -= dt;
                 // 持续回血
                 p.hp = Math.min(p.hp + stats.lightSpiritHealRate * dt, p.maxHp);
-            }
-
-            // 控制免疫计时器递减
-            if (p.ccImmuneTimer && p.ccImmuneTimer > 0) {
-                p.ccImmuneTimer -= dt;
             }
         }
     };
