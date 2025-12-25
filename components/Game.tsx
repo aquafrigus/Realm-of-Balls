@@ -1023,6 +1023,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const p = getHumanPlayer();
         if (p.isDead || p.isBot) return;
 
+        // [特殊处理] 魔法球右键（移形换影）可在被控时使用（解控机制）
+        if (p.type === CharacterType.MAGIC && btn === 'Right') {
+            handleMagicProtection(p);
+            return; // 处理完直接返回
+        }
+
         // [修复] 硬控状态下禁止攻击输入
         if (isControlled(p)) {
             return;
@@ -1745,14 +1751,17 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        let spell = 1;
+        let spell = 2;
         // const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
             // 《除你武器》
             if (!canUseSecondarySkill(p)) return;
             // Cost: 100 MP
-            if ((p.mp || 0) < stats.expelliarmusManaCost!) return; // Fizzle if not enough mana
+            if ((p.mp || 0) < stats.expelliarmusManaCost!) {
+                Sound.playUI('ERROR');
+                return; // Fizzle if not enough mana
+            }
 
             p.mp! -= stats.expelliarmusManaCost!;
 
@@ -1795,7 +1804,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 《盔甲护身》- 护盾
             if (!canUseSecondarySkill(p)) return;
             // Cost: 100 MP
-            if ((p.mp || 0) < stats.armorManaCost) return;
+            if ((p.mp || 0) < stats.armorManaCost) {
+                Sound.playUI('ERROR');
+                return;
+            }
 
             // Prevent recasting while shield is active
             if ((p.magicShieldHp || 0) > 0) return;
@@ -1838,7 +1850,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // Cost: 100 MP
             const cost = (stats as any).blinkManaCost || 100;
 
-            if ((p.mp || 0) < cost) return;
+            if ((p.mp || 0) < cost) {
+                Sound.playUI('ERROR');
+                return;
+            }
             p.mp! -= cost;
 
             // 计算最安全位置
@@ -3398,10 +3413,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // 移形换影动画期间禁止其他输入
         if (p.apparitionPhase && p.apparitionPhase !== 'NONE') {
             return;
-        }
-
-        if (p.type === CharacterType.MAGIC && keysRef.current['MouseRight']) {
-            handleMagicProtection(p);
         }
 
         // [解控技能早期处理] 白魔法球《呼神护卫》可在被控制时释放
