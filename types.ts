@@ -176,6 +176,7 @@ export interface PlayerState extends GameEntity {
   stealthTimer?: number;
   hasteTimer?: number;
   slowTimer: number;
+  healTimer: number;
   isWet: boolean;
   smashWidthMin?: number;
   smashWidthMax?: number;
@@ -210,6 +211,7 @@ export interface PlayerState extends GameEntity {
   ccImmuneTimer?: number;         // 控制免疫计时器
   magicShieldShakeTimer?: number;  // 护盾受击抖动计时器
   magicShieldDamageLevel?: number; // 护盾破损等级 (0-4)
+  lightSpiritPowerRatio?: number; // [New] Store scaling factor based on MP spent
 
   // 移形换影动画状态
   apparitionPhase?: 'DISAPPEARING' | 'FLYING' | 'APPEARING' | 'NONE';
@@ -272,6 +274,8 @@ export interface GroundEffect {
   damageType?: DamageType;
   isPendingDetonation?: boolean;
   detonationTimer?: number;
+  hitTargets?: string[];
+  powerRatio?: number;
 }
 
 export interface DangerZone {

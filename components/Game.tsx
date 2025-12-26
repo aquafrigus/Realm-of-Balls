@@ -110,17 +110,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         return !!entity.isMechanical;
     };
 
-    // 硬控状态定义：状态类型 -> 计时器属性名
-    const HARD_CC_CONFIG: Record<string, string> = {
-        'stun': 'stunTimer',
-        'sleep': 'sleepTimer',
-        'petrify': 'petrifyTimer',
-        'charm': 'charmTimer',
-        'taunt': 'tauntTimer',
-        'fear': 'fearTimer'
-    };
-    const HARD_CC_STATUS_TYPES = Object.keys(HARD_CC_CONFIG) as (keyof typeof HARD_CC_CONFIG)[];
-    const CONTROL_TIMER_KEYS = Object.values(HARD_CC_CONFIG) as (keyof PlayerState)[];
+    // 硬控状态定义：通过 STATUS_CONFIG 的 tags 动态生成
+    const HARD_CC_STATUS_TYPES = Object.keys(STATUS_CONFIG).filter(key =>
+        STATUS_CONFIG[key].tags?.includes('hard_cc')
+    );
+    const CONTROL_TIMER_KEYS = HARD_CC_STATUS_TYPES.map(key =>
+        STATUS_CONFIG[key].propName
+    ) as (keyof PlayerState)[];
 
     // 所有解控技能/机制都应在这里添加触发条件
     const getCleanseReasons = (p: PlayerState): string[] => {
@@ -161,17 +157,18 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         target: PlayerState | Drone | any,
         statusType: string
     ): ImmunityResult => {
-        // 1. 机械体免疫精神控制
+        // 1. 机械体免疫精神控制 (Tag: mental)
         if (isMechanical(target)) {
-            const immuneStatuses = ['charm', 'fear', 'sleep', 'silence', 'taunt'];
-            if (immuneStatuses.includes(statusType)) {
+            const config = STATUS_CONFIG[statusType];
+            if (config && config.tags?.includes('mental')) {
                 return { isImmune: true, reason: 'mechanical', particleColor: '#9ca3af', showLabel: true };
             }
         }
 
-        // 2. 火焰免疫（Pyro 或 潮湿状态）
+        // 2. 火焰免疫（Pyro 或 潮湿状态）(Tag: fire)
         if (target.type === CharacterType.PYRO || target.isWet) {
-            if (['burn', 'burst'].includes(statusType)) {
+            const config = STATUS_CONFIG[statusType];
+            if (config && config.tags?.includes('fire')) {
                 return { isImmune: true, reason: 'fire' };
             }
         }
@@ -202,28 +199,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         return { isImmune: false };
     };
 
-    // 状态类型到属性名的映射（集中管理，避免重复定义）
-    const STATUS_PROPERTY_MAP: Record<string, string> = {
-        'fear': 'fearTimer',
-        'stun': 'stunTimer',
-        'slow': 'slowTimer',
-        'root': 'rootTimer',
-        'silence': 'silenceTimer',
-        'disarm': 'disarmTimer',
-        'blind': 'blindTimer',
-        'sleep': 'sleepTimer',
-        'petrify': 'petrifyTimer',
-        'burn': 'burnTimer',
-        'taunt': 'tauntTimer',
-        'charm': 'charmTimer',
-        'stealth': 'stealthTimer',
-        'haste': 'hasteTimer',
-        'invincible': 'invincibleTimer',
-        'burst': 'burstFlag',
-        'wet': 'isWet',
-        'heal': 'hp',
-        'revive': 'isDead'
-    };
+
 
     // Helper: 任何形式的控制状态（用于隐藏指示器、禁止自主瞄准等）
     const isControlled = (p: PlayerState): boolean => {
@@ -240,17 +216,17 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     // Helper: 清空所有状态效果（用于复活时）
     const clearAllStatusEffects = (p: PlayerState) => {
         // 自动遍历所有状态并清空（排除 heal 和 revive，它们不是状态效果）
-        Object.entries(STATUS_PROPERTY_MAP).forEach(([statusType, propName]) => {
+        Object.entries(STATUS_CONFIG).forEach(([statusType, config]) => {
             // 跳过特殊类型
             if (statusType === 'heal' || statusType === 'revive') return;
 
-            const currentValue = (p as any)[propName];
+            const currentValue = (p as any)[config.propName];
 
             // 根据属性类型重置
             if (typeof currentValue === 'boolean') {
-                (p as any)[propName] = false;
+                (p as any)[config.propName] = false;
             } else if (typeof currentValue === 'number') {
-                (p as any)[propName] = 0;
+                (p as any)[config.propName] = 0;
             }
         });
 
@@ -914,22 +890,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             secondarySkillMaxCooldown: (stats.secondarySkillCooldown || 5000) / 1000,
             attackCooldown: 0,
 
-            // Status
-            slowTimer: 0,
-            burnTimer: 0,
+            // Status - Auto-initialized from STATUS_CONFIG
+            ...Object.fromEntries(
+                Object.entries(STATUS_CONFIG)
+                    .filter(([_, config]) => config.autoInit === true)
+                    .map(([_, config]) => [config.propName, config.initialValue])
+            ),
             flameExposure: 0,
-            isWet: false,
-            disarmTimer: 0,
-            silenceTimer: 0,
-            fearTimer: 0,
-            stunTimer: 0,
-            blindTimer: 0,
-            tauntTimer: 0,
-            rootTimer: 0,
-            sleepTimer: 0,
-            petrifyTimer: 0,
-            charmTimer: 0,
-            stealth: false,
 
             // Magic Ball
             mp: stats.maxMp || 0,
@@ -961,7 +928,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             aiStrafeTimer: 0,
             aiChangeDistTimer: 0,
             forcedMoveTimer: 0,
-        };
+        } as unknown as PlayerState;
     }
 
     // --- Input ---
@@ -1126,7 +1093,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (p.type === CharacterType.PYRO) {
             // Heal
             const healRate = CHAR_STATS[CharacterType.PYRO].magmaHealRate;
-            if (p.hp < p.maxHp) p.hp += healRate * dt;
+            if (p.hp < p.maxHp) {
+                p.hp += healRate * dt;
+                applyStatus(p, 'heal', 0.5);
+            }
 
             // Refuel 增加岩浆带来的额外燃料回复 (与其基础回复叠加)
             const bonusFuel = CHAR_STATS[CharacterType.PYRO].fuelRegenMagma * dt;
@@ -1180,7 +1150,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             target.statusHistory.shift();
         }
 
-        const propKey = STATUS_PROPERTY_MAP[type];
+        const config = STATUS_CONFIG[type];
 
         // [Special] Revive: Clear all status effects first
         if (type === 'revive' && 'type' in target) {
@@ -1188,7 +1158,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
         // Apply
-        if (propKey) {
+        if (config) {
+            const propKey = config.propName;
             if (typeof (target as any)[propKey] === 'boolean') {
                 // Special handling for revive: isDead should be set to false, not true
                 (target as any)[propKey] = (type === 'revive') ? false : true;
@@ -1264,13 +1235,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         },
                         vel: {
                             x: (Math.random() - 0.5) * 4,
-                            y: -3 - Math.random() * 5 // Strong upward burst
+                            y: -3 - Math.random() * 5, // Strong upward burst
                         },
                         life: 0.6 + Math.random() * 0.6,
                         maxLife: 1.2,
                         color: 'rgba(241, 245, 249, 0.75)', // Elegant steam white
                         size: 6 + Math.random() * 12, // Large soft particles
-                        drag: 0.91 // High air resistance for "soft" dissipation
+                        drag: 0.91, // High air resistance for "soft" dissipation
                     });
                 }
                 Sound.playSkill('MAGMA_LAND'); // Sizzle/Splash sound
@@ -1893,35 +1864,28 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             p.mp = 0;
             p.skillCooldown = stats.skillCooldown / 1000;
 
+            // [New] Calculate Power Ratio
+            const powerRatio = mpSpent / 100;
+
             // 三道银白色冲击波 + 击退
-            for (let wave = 0; wave < 3; wave++) {
+            // 修改：每一道波都是独立的判定体，随时间扩大
+            const waveCount = 3;
+            for (let wave = 0; wave < waveCount; wave++) {
                 stateRef.current.groundEffects.push({
                     id: Math.random().toString(),
                     pos: { ...p.pos },
-                    radius: 50 + wave * 100,
-                    life: 0.3 + wave * 0.15,
-                    maxLife: 0.3 + wave * 0.15,
+                    radius: 50, // Start small
+                    life: 0.5 + wave * 0.2, // Stagger lifetimes so they expand one after another roughly
+                    maxLife: 0.5 + wave * 0.2,
                     type: 'PATRONUS_WAVE',
                     ownerId: p.id,
+                    hitTargets: [], // Initialize hit tracking
+                    powerRatio: powerRatio // [New] Pass scaling
                 });
             }
 
-            // 对范围内敌人造成伤害和击退
-            getEnemies(p).forEach(enemy => {
-                const dist = Utils.dist(p.pos, enemy.pos);
-                if (dist < stats.patronusRange) {
-                    const dmg = mpSpent * 0.5 * (1 - dist / stats.patronusRange);
-                    if ('isSummon' in enemy) {
-                        enemy.hp -= dmg;
-                        if (enemy.hp <= 0) killEntity(enemy, p.id);
-                    } else {
-                        takeDamage(enemy, dmg, CharacterType.MAGIC, DamageType.MAGIC);
-                    }
-                    const dir = Utils.normalize(Utils.sub(enemy.pos, p.pos));
-                    applyKnockback(enemy, dir, stats.patronusKnockback);
-                    spawnParticles(enemy.pos, 8, '#f8fafc', 5);
-                }
-            });
+            // [Removed] Immediate damage loop - moved to updateGroundEffects for dynamic wave collision
+
 
             // 召唤光灵球守护神实体
             const spiritDuration = stats.lightSpiritDuration / 1000;
@@ -1940,6 +1904,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             });
 
             p.lightSpiritTimer = spiritDuration;
+            p.lightSpiritPowerRatio = powerRatio; // [New] Store ratio for healing scaling
             p.ccImmuneTimer = spiritDuration;
             p.statusLabel = MAGIC_SPELL_LINES.patronus + '!';
 
@@ -2621,8 +2586,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 applyStatus(target, 'stun', 2.0);
                 applyStatus(target, 'slow', 2.5);
 
-                // 打断施法效果 (使用统一的interruptAction)
-                interruptAction(target);
 
                 // [New] Set Wukong Ult Knockback state
                 target.wukongUltKnockbackCharge = chargePct;
@@ -2674,9 +2637,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const dv = Utils.mult(dir, impulse / target.mass);
         target.vel = Utils.add(target.vel, dv);
 
-        // [New] Set forced movement timer to allow entering hazards (Water)
-        // Increased to 1.0s to better cover long knockbacks (e.g. Wukong Ult)
         target.forcedMoveTimer = 1.0;
+        interruptAction(target);
     };
 
     const killEntity = (entity: any, killerId: string) => {
@@ -5162,6 +5124,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (p.secondarySkillCooldown > 0) p.secondarySkillCooldown -= dt;
         if (p.attackCooldown > 0) p.attackCooldown -= dt;
         if (p.slowTimer > 0) p.slowTimer -= dt;
+        if (p.healTimer > 0) p.healTimer -= dt;
         if (p.wukongThrustTimer > 0) p.wukongThrustTimer -= dt;
         if (p.pounceCooldown > 0) p.pounceCooldown -= dt;
         if (p.disarmTimer > 0) p.disarmTimer -= dt;
@@ -5375,11 +5338,18 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 p.secondarySkillMaxCooldown = CHAR_STATS[CharacterType.MAGIC].armorCooldown / 1000;
             }
 
-            // 光灵球效果 - 持续回血
-            // 注：lightSpiritTimer 已在通用计时器区域递减（第 5149 行）
-            if (p.lightSpiritTimer && p.lightSpiritTimer > 0) {
-                // 持续回血
-                p.hp = Math.min(p.hp + stats.lightSpiritHealRate * dt, p.maxHp);
+            // 光灵球效果 - 持续回血 (Hooked into heal status)
+            if (p.lightSpiritTimer && p.lightSpiritTimer > 0 && p.hp < p.maxHp) {
+                applyStatus(p, 'heal', 0.5);
+            }
+
+            if (p.healTimer > 0) {
+                // Determine heal rate based on character/source if needed
+                if (p.type === CharacterType.MAGIC) {
+                    const baseHeal = stats.lightSpiritHealRate;
+                    const ratio = p.lightSpiritPowerRatio || 1;
+                    p.hp = Math.min(p.hp + (baseHeal * ratio) * dt, p.maxHp);
+                }
             }
         }
     };
@@ -5456,6 +5426,77 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 }
                 return;
             }
+
+            // PATRONUS WAVE Logic
+            if (g.type === 'PATRONUS_WAVE') {
+                const owner = state.players.find(p => p.id === g.ownerId);
+                if (!owner) {
+                    g.life = 0;
+                    return;
+                }
+
+                // Calculate current radius based on expansion
+                // Progress: 0 to 1
+                const progress = 1 - (g.life / g.maxLife);
+                const stats = CHAR_STATS[CharacterType.MAGIC];
+                const maxRange = stats.patronusRange;
+                const startRadius = g.radius; // Initial radius (50)
+                const currentRadius = startRadius + progress * (maxRange - startRadius);
+
+                // Check collisions
+                // Targets: Enemies (Players and Drones)
+                const targets = [
+                    ...state.players.filter(p => p.id !== g.ownerId && p.teamId !== owner.teamId && !p.isDead),
+                    ...state.drones.filter(d => d.ownerId !== g.ownerId && (!state.players.find(p => p.id === d.ownerId) || state.players.find(p => p.id === d.ownerId)?.teamId !== owner.teamId) && d.hp > 0)
+                ];
+
+                targets.forEach(target => {
+                    // Check if already hit by *this* specific wave
+                    if (g.hitTargets && g.hitTargets.includes(target.id)) return;
+
+                    // Collision check (Circle)
+                    const dist = Utils.dist(g.pos, target.pos);
+                    if (dist < currentRadius + target.radius) {
+                        // Apply Effects
+
+                        // 1. Damage (Reduced per wave since there are 3)
+                        const baseDamage = 30; // 3 waves * 30 = 90 base. 
+                        const ratio = g.powerRatio || 1;
+                        const damage = baseDamage * ratio;
+
+                        if ('isSummon' in target) {
+                            target.hp -= damage;
+                            if (target.hp <= 0) killEntity(target, g.ownerId);
+                        } else {
+                            takeDamage(target, damage, CharacterType.MAGIC, DamageType.MAGIC);
+                        }
+
+                        // 2. Knockback
+                        const dir = Utils.normalize(Utils.sub(target.pos, g.pos));
+                        const baseKnockback = stats.patronusKnockback;
+                        const knockback = baseKnockback * ratio;
+
+                        if ('isSummon' in target) {
+                            // Manual knockback for Drones
+                            const impulse = knockback * 2;
+                            const dv = Utils.mult(dir, impulse / target.mass);
+                            target.vel = Utils.add(target.vel, dv);
+                        } else {
+                            applyKnockback(target, dir, knockback);
+                        }
+
+                        // 3. Visuals
+                        spawnParticles(target.pos, 5, '#f8fafc', 5);
+
+                        // 4. Mark as hit
+                        if (!g.hitTargets) g.hitTargets = [];
+                        g.hitTargets.push(target.id);
+                    }
+                });
+
+                return;
+            }
+
             if (g.type === 'SCOOPER_SMASH') {
                 // Just visual placeholder, logic handled in timeout
                 return;
@@ -6157,7 +6198,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 if (g.type === 'PATRONUS_WAVE') {
                     const lifeRatio = g.life / g.maxLife;
                     const expandRatio = 1 - lifeRatio; // 从小到大扩展
-                    const currentRadius = g.radius + expandRatio * 150; // 扩展动画
+                    const maxRange = CHAR_STATS[CharacterType.MAGIC].patronusRange;
+                    const currentRadius = g.radius + expandRatio * (maxRange - g.radius); // Match update logic
 
                     ctx.save();
 

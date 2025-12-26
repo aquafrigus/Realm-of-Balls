@@ -1,31 +1,41 @@
 import { CharacterType } from "./types";
 
-export const STATUS_CONFIG: Record<string, { label: string; color: string; nature: string; floatingTextCD?: number }> = {
+// Status Effect Configuration
+export const STATUS_CONFIG: Record<string, {
+  label: string;
+  color: string;
+  nature: string;
+  floatingTextCD?: number;
+  // Implementation Metadata
+  propName: string;
+  initialValue?: any;
+  autoInit?: boolean;
+  tags?: string[]; // [New] Logic classification (e.g. 'hard_cc', 'mental', 'fire')
+}> = {
   // Negative Statuses (Debuffs)
-  stun: { label: '眩晕|拍扁', color: '#fbbf24', nature: 'negative', floatingTextCD: 800 },   // Amber-400
-  petrify: { label: '石化', color: '#94a3b8', nature: 'negative', floatingTextCD: 800 },    // Slate-400
-  sleep: { label: '催眠', color: '#818cf8', nature: 'negative', floatingTextCD: 800 },      // Indigo-400
-  fear: { label: '恐惧', color: '#c084fc', nature: 'negative', floatingTextCD: 800 },       // Purple-400
-  charm: { label: '魅惑|被萌翻', color: '#ec4899', nature: 'negative', floatingTextCD: 800 },      // Pink-500
-  taunt: { label: '嘲讽', color: '#f43f5e', nature: 'negative', floatingTextCD: 800 },      // Rose-500
-  silence: { label: '沉默', color: '#60a5fa', nature: 'negative', floatingTextCD: 800 },    // Blue-400
-  disarm: { label: '缴械|踩', color: '#f87171', nature: 'negative', floatingTextCD: 800 },     // Red-400
-  root: { label: '束缚', color: '#22c55e', nature: 'negative', floatingTextCD: 800 },       // Green-500
-  blind: { label: '致盲', color: '#10b981', nature: 'negative', floatingTextCD: 800 },      // Emerald-500
-  slow: { label: '减速', color: '#3b82f6', nature: 'negative', floatingTextCD: 3000 },      // Blue-500
-  burn: { label: '灼烧', color: '#ea580c', nature: 'negative', floatingTextCD: 3000 },       // Orange-600
+  stun: { label: '眩晕|拍扁', color: '#fbbf24', nature: 'negative', floatingTextCD: 800, propName: 'stunTimer', initialValue: 0, autoInit: true, tags: ['hard_cc'] },
+  petrify: { label: '石化', color: '#94a3b8', nature: 'negative', floatingTextCD: 800, propName: 'petrifyTimer', initialValue: 0, autoInit: true, tags: ['hard_cc'] },
+  sleep: { label: '催眠', color: '#818cf8', nature: 'negative', floatingTextCD: 800, propName: 'sleepTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental'] },
+  fear: { label: '恐惧', color: '#c084fc', nature: 'negative', floatingTextCD: 800, propName: 'fearTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental'] },
+  charm: { label: '魅惑|被萌翻', color: '#ec4899', nature: 'negative', floatingTextCD: 800, propName: 'charmTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental'] },
+  taunt: { label: '嘲讽', color: '#f43f5e', nature: 'negative', floatingTextCD: 800, propName: 'tauntTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental'] },
+  silence: { label: '沉默', color: '#60a5fa', nature: 'negative', floatingTextCD: 800, propName: 'silenceTimer', initialValue: 0, autoInit: true, tags: ['mental'] },
+  disarm: { label: '缴械|踩', color: '#f87171', nature: 'negative', floatingTextCD: 800, propName: 'disarmTimer', initialValue: 0, autoInit: true },
+  root: { label: '束缚', color: '#22c55e', nature: 'negative', floatingTextCD: 800, propName: 'rootTimer', initialValue: 0, autoInit: true },
+  blind: { label: '致盲', color: '#10b981', nature: 'negative', floatingTextCD: 800, propName: 'blindTimer', initialValue: 0, autoInit: true },
+  slow: { label: '减速', color: '#3b82f6', nature: 'negative', floatingTextCD: 3000, propName: 'slowTimer', initialValue: 0, autoInit: true },
+  burn: { label: '灼烧', color: '#ea580c', nature: 'negative', floatingTextCD: 3000, propName: 'burnTimer', initialValue: 0, autoInit: true, tags: ['fire'] },
 
   // Positive Statuses (Buffs)
-  invincible: { label: '无敌', color: '#facc15', nature: 'positive', floatingTextCD: 1000 }, // Yellow-400
-  stealth: { label: '隐身', color: '#64748b', nature: 'positive', floatingTextCD: 1000 },    // Slate-500
-  haste: { label: '加速', color: '#0ea5e9', nature: 'positive', floatingTextCD: 1000 },       // Sky-500
-  heal: { label: '治疗', color: '#34d399', nature: 'positive', floatingTextCD: 500 },    // Emerald-400
-  revive: { label: '复活|有精神', color: '#22d3ee', nature: 'positive', floatingTextCD: 2000 },      // Cyan-400
+  invincible: { label: '无敌', color: '#facc15', nature: 'positive', floatingTextCD: 1000, propName: 'invincibleTimer', initialValue: 0, autoInit: true },
+  stealth: { label: '隐身', color: '#64748b', nature: 'positive', floatingTextCD: 1000, propName: 'stealthTimer', initialValue: 0, autoInit: true },
+  haste: { label: '加速', color: '#0ea5e9', nature: 'positive', floatingTextCD: 1000, propName: 'hasteTimer', initialValue: 0, autoInit: true },
+  heal: { label: '治疗', color: '#34d399', nature: 'positive', floatingTextCD: 1500, propName: 'healTimer', initialValue: 0, autoInit: true },
 
   // Special Statuses
-  burst: { label: '爆燃', color: '#ef4444', nature: 'special', floatingTextCD: 5000 },    // Red-500
-  wet: { label: '潮湿', color: '#06b6d4', nature: 'special', floatingTextCD: 800 },        // Cyan-500
-
+  burst: { label: '爆燃', color: '#ef4444', nature: 'special', floatingTextCD: 5000, propName: 'burstFlag', autoInit: false, tags: ['fire'] },
+  wet: { label: '潮湿', color: '#06b6d4', nature: 'special', floatingTextCD: 800, propName: 'isWet', initialValue: false, autoInit: true, tags: ['water'] },
+  revive: { label: '复活|有精神', color: '#22d3ee', nature: 'positive', floatingTextCD: 2000, propName: 'isDead', autoInit: false },
 };
 
 export const MAP_SIZE = { width: 2000, height: 2000 };
@@ -227,10 +237,10 @@ export const CHAR_STATS = {
     skillCooldown: 15000,
     secondarySkillCooldown: 5000, // 右键初始CD
     // 《呼神护卫》(白): 冲击波击退, 光灵球持续5秒
-    patronusKnockback: 1200,
-    patronusRange: 350,
+    patronusKnockback: 2500, // Increased
+    patronusRange: 480,      // Increased
     lightSpiritDuration: 5000,
-    lightSpiritHealRate: 15,   // HP/秒
+    lightSpiritHealRate: 30,   // HP/秒 (Buffed: 15 -> 30, so 2x ratio = 60 HP/s)
     lightSpiritMpRegenMultiplier: 2,
     // 光灵球守护神冲撞参数
     lightSpiritRadius: 15,           // 光灵球半径
@@ -238,7 +248,7 @@ export const CHAR_STATS = {
     lightSpiritOrbitRadius: 80,      // 环绕半径
     lightSpiritOrbitSpeed: 4,        // 环绕速度（弧度/秒）
     lightSpiritChargeRange: 500,     // 检测敌人范围
-    lightSpiritChargeKnockback: 500, // 冲撞击退力度
+    lightSpiritChargeKnockback: 1500, // 冲撞击退力度 (Buffed 500 -> 1500)
     lightSpiritChargeCooldown: 0.4,  // 每次冲撞后的CD
     lightSpiritReturnSpeed: 20,      // 返回速度
     // 《阿瓦达啃大瓜》(黑): 蓄力贯穿光束
