@@ -1249,9 +1249,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
 
-        // Generic Interrupt Logic: Hard CC, Silence, Fear, Sleep, etc. break charging/channeling
-        const interruptTypes = ['stun', 'fear', 'sleep', 'petrify', 'silence', 'charm', 'taunt'];
-        if (interruptTypes.includes(type)) {
+        // Generic Interrupt Logic: Status effects with 'interrupt' tag break charging/channeling
+        if (config?.tags?.includes('interrupt')) {
             interruptAction(target);
         }
     };

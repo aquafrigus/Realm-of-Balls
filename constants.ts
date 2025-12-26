@@ -13,13 +13,13 @@ export const STATUS_CONFIG: Record<string, {
   tags?: string[]; // [New] Logic classification (e.g. 'hard_cc', 'mental', 'fire')
 }> = {
   // Negative Statuses (Debuffs)
-  stun: { label: '眩晕|拍扁', color: '#fbbf24', nature: 'negative', floatingTextCD: 800, propName: 'stunTimer', initialValue: 0, autoInit: true, tags: ['hard_cc'] },
-  petrify: { label: '石化', color: '#94a3b8', nature: 'negative', floatingTextCD: 800, propName: 'petrifyTimer', initialValue: 0, autoInit: true, tags: ['hard_cc'] },
-  sleep: { label: '催眠', color: '#818cf8', nature: 'negative', floatingTextCD: 800, propName: 'sleepTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental'] },
-  fear: { label: '恐惧', color: '#c084fc', nature: 'negative', floatingTextCD: 800, propName: 'fearTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental'] },
-  charm: { label: '魅惑|被萌翻', color: '#ec4899', nature: 'negative', floatingTextCD: 800, propName: 'charmTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental'] },
-  taunt: { label: '嘲讽', color: '#f43f5e', nature: 'negative', floatingTextCD: 800, propName: 'tauntTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental'] },
-  silence: { label: '沉默', color: '#60a5fa', nature: 'negative', floatingTextCD: 800, propName: 'silenceTimer', initialValue: 0, autoInit: true, tags: ['mental'] },
+  stun: { label: '眩晕|拍扁', color: '#fbbf24', nature: 'negative', floatingTextCD: 800, propName: 'stunTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'interrupt'] },
+  petrify: { label: '石化', color: '#94a3b8', nature: 'negative', floatingTextCD: 800, propName: 'petrifyTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'interrupt'] },
+  sleep: { label: '催眠', color: '#818cf8', nature: 'negative', floatingTextCD: 800, propName: 'sleepTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental', 'interrupt'] },
+  fear: { label: '恐惧', color: '#c084fc', nature: 'negative', floatingTextCD: 800, propName: 'fearTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental', 'interrupt'] },
+  charm: { label: '魅惑|被萌翻', color: '#ec4899', nature: 'negative', floatingTextCD: 800, propName: 'charmTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental', 'interrupt'] },
+  taunt: { label: '嘲讽', color: '#f43f5e', nature: 'negative', floatingTextCD: 800, propName: 'tauntTimer', initialValue: 0, autoInit: true, tags: ['hard_cc', 'mental', 'interrupt'] },
+  silence: { label: '沉默', color: '#60a5fa', nature: 'negative', floatingTextCD: 800, propName: 'silenceTimer', initialValue: 0, autoInit: true, tags: ['mental', 'interrupt'] },
   disarm: { label: '缴械|踩', color: '#f87171', nature: 'negative', floatingTextCD: 800, propName: 'disarmTimer', initialValue: 0, autoInit: true },
   root: { label: '束缚', color: '#22c55e', nature: 'negative', floatingTextCD: 800, propName: 'rootTimer', initialValue: 0, autoInit: true },
   blind: { label: '致盲', color: '#10b981', nature: 'negative', floatingTextCD: 800, propName: 'blindTimer', initialValue: 0, autoInit: true },
