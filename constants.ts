@@ -119,6 +119,11 @@ export const CHAR_STATS = {
     skillCooldown: 1000,
     turretSpeed: 0.036, // Increased by 10% (0.033 -> 0.036)
 
+    // Base Tenacity
+    baseTenacity: {
+      knockbackResistance: 0.3, // 30% inherent knockback resistance
+    },
+
     // Drone Stats
     droneHp: 180,
     droneLife: 15000,
@@ -253,6 +258,7 @@ export const CHAR_STATS = {
     lightSpiritOrbitSpeed: 4,        // 环绕速度（弧度/秒）
     lightSpiritChargeRange: 500,     // 检测敌人范围
     lightSpiritChargeKnockback: 1500, // 冲撞击退力度 (Buffed 500 -> 1500)
+    lightSpiritDamage: 40,           // [New] 冲撞基础伤害
     lightSpiritChargeCooldown: 0.4,  // 每次冲撞后的CD
     lightSpiritReturnSpeed: 20,      // 返回速度
     // 《阿瓦达啃大瓜》(黑): 蓄力贯穿光束
@@ -269,10 +275,13 @@ export const CHARGE_CONFIG: Record<string, {
   rules: {
     canBeInterrupted: boolean;
     movementMultiplier: number;
-    hasSuperArmor: boolean;
     preventsBasicAttack: boolean;
     locksAim: boolean;
     isAirborne: boolean;
+  };
+  tenacity?: {
+    knockbackResistance?: number; // 0.0 ~ 1.0, reduces knockback force
+    ccResistance?: number;        // 0.0 ~ 1.0, reduces CC duration
   };
   cooldownProperty?: string;
   maxCooldown?: number;
@@ -285,11 +294,11 @@ export const CHARGE_CONFIG: Record<string, {
     rules: {
       canBeInterrupted: true,
       movementMultiplier: 0.3,
-      hasSuperArmor: true,
       preventsBasicAttack: true,
       locksAim: false,
       isAirborne: false,
     },
+    tenacity: { knockbackResistance: 0.8 },
     cooldownProperty: 'wukongThrustTimer',
     maxCooldown: CHAR_STATS[CharacterType.WUKONG].thrustCooldown / 1000,
     resetProperties: { wukongChargeState: 'NONE', wukongChargeTime: 0 },
@@ -301,11 +310,11 @@ export const CHARGE_CONFIG: Record<string, {
     rules: {
       canBeInterrupted: true,
       movementMultiplier: 0,
-      hasSuperArmor: true,
       preventsBasicAttack: true,
       locksAim: false,
       isAirborne: false,
     },
+    tenacity: { knockbackResistance: 0.8 },
     cooldownProperty: 'skillCooldown',
     maxCooldown: CHAR_STATS[CharacterType.WUKONG].skillCooldown / 1000,
     resetProperties: { wukongChargeState: 'NONE', wukongChargeTime: 0, wukongChargeHoldTimer: 0 },
@@ -317,7 +326,6 @@ export const CHARGE_CONFIG: Record<string, {
     rules: {
       canBeInterrupted: true,
       movementMultiplier: 0.2,
-      hasSuperArmor: false,
       preventsBasicAttack: true,
       locksAim: false,
       isAirborne: false,
@@ -333,7 +341,6 @@ export const CHARGE_CONFIG: Record<string, {
     rules: {
       canBeInterrupted: true,
       movementMultiplier: 1,
-      hasSuperArmor: false,
       preventsBasicAttack: true,
       locksAim: false,
       isAirborne: true,
@@ -347,7 +354,6 @@ export const CHARGE_CONFIG: Record<string, {
     rules: {
       canBeInterrupted: true,
       movementMultiplier: 0,
-      hasSuperArmor: false,
       preventsBasicAttack: true,
       locksAim: true,
       isAirborne: false,

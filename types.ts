@@ -67,6 +67,7 @@ export interface LightSpirit {
   chargeProgress?: number;   // 冲撞进度 (0-1)
   cooldown: number;       // 冲撞CD
   hitTargets: string[];   // 本次冲撞已命中的目标（防止重复击中）
+  powerRatio?: number;    // [New] 伤害/效果加成比例 (基于消耗的MP)
 }
 
 export interface PlayerState extends GameEntity {

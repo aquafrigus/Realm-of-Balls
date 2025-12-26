@@ -1119,6 +1119,49 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
     };
 
+    // [Tenacity System] Calculate total resistance to CC and Knockback
+    const getTenacity = (target: PlayerState) => {
+        let kbRes = 0;
+        let ccRes = 0;
+
+        // 1. Base Stats (Passive)
+        const stats = CHAR_STATS[target.type] as any; // Type assertion since CharStats is implicit
+        if (stats.baseTenacity) {
+            kbRes += stats.baseTenacity.knockbackResistance || 0;
+            ccRes += stats.baseTenacity.ccResistance || 0;
+        }
+
+        // 2. Charge State (Temporary)
+        const chargeConfig = getActiveChargeConfig(target);
+        if (chargeConfig?.tenacity) {
+            kbRes += chargeConfig.tenacity.knockbackResistance || 0;
+            ccRes += chargeConfig.tenacity.ccResistance || 0;
+        }
+
+        // 3. Skills / Buffs (Dynamic)
+
+        // Magic Shield: Immovable Object (100% Res)
+        if ((target.magicShieldHp || 0) > 0) {
+            kbRes += 1.0;
+            ccRes += 1.0;
+        }
+
+        // Invincible: Immunity to negative effects
+        if ((target.invincibleTimer || 0) > 0) {
+            ccRes += 1.0;
+        }
+
+        // Hard CC Immunity (Patronus, etc.)
+        if (hasCcImmunity(target)) {
+            ccRes += 1.0;
+        }
+
+        return {
+            knockbackResistance: Math.min(1.0, kbRes),
+            ccResistance: Math.min(1.0, ccRes)
+        };
+    };
+
     // Uses CHARGE_CONFIG to determine if the charge can be interrupted
     const interruptAction = (target: PlayerState) => {
         const chargeId = getActiveChargeId(target);
@@ -1172,14 +1215,36 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const applyStatus = (target: PlayerState | Drone | any, type: string, duration: number, sourceId?: string, pos?: Vector2) => {
-        // 统一免疫检查
+        // [Tenacity System] Apply CC resistance
+        const config = STATUS_CONFIG[type];
+
+        let finalDuration = duration;
+
+        // Tenacity only applies to Negative statuses or CC
+        if (config && (config.nature === 'negative' || config.tags?.includes('hard_cc'))) {
+            const tenacity = getTenacity(target);
+            finalDuration *= (1 - tenacity.ccResistance);
+
+            // Full Immunity via Tenacity (>= 100%)
+            if (tenacity.ccResistance >= 1.0 && finalDuration <= 0) {
+            }
+        }
+
+        // 统一免疫检查 (Type Advantages + Legacy Checks)
         const immunity = checkStatusImmunity(target, type);
-        if (immunity.isImmune) {
+
+        // If immunity logic says immune OR Tenacity reduced duration to 0
+        if (immunity.isImmune || (finalDuration <= 0 && config?.nature === 'negative')) {
             if (immunity.particleColor) {
                 spawnParticles(target.pos, 5, immunity.particleColor, 3, 0.3);
             }
+            // Show label if explicitly immune OR if tenacity fully resisted
             if (immunity.showLabel) {
                 target.statusLabel = "免疫!";
+            } else if (finalDuration <= 0 && !immunity.isImmune) {
+                // If resisted solely by tenacity (and not caught by checkStatusImmunity), show "抵抗!"
+                target.statusLabel = "抵抗!";
+                target.statusLabelColor = '#cbd5e1'; // Slate-300
             }
             return;
         }
@@ -1198,8 +1263,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             target.statusHistory.shift();
         }
 
-        const config = STATUS_CONFIG[type];
-
         // [Special] Revive: Clear all status effects first
         if (type === 'revive' && 'type' in target) {
             clearAllStatusEffects(target as PlayerState);
@@ -1212,7 +1275,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // Special handling for revive: isDead should be set to false, not true
                 (target as any)[propKey] = (type === 'revive') ? false : true;
             } else {
-                (target as any)[propKey] = Math.max((target as any)[propKey] || 0, duration);
+                (target as any)[propKey] = Math.max((target as any)[propKey] || 0, finalDuration);
             }
 
             // [New] Use statusQueue instead of single statusLabel
@@ -1881,7 +1944,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             // 启动消失阶段动画
             p.apparitionPhase = 'DISAPPEARING';
-            p.apparitionTimer = 1.0;  // 消失阶段持续1秒
+            p.apparitionTimer = 0.5;  // 消失阶段持续0.5秒
             p.apparitionStartPos = { ...p.pos };
             p.apparitionEndPos = safePos;
 
@@ -1950,6 +2013,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 state: 'ORBITING',
                 cooldown: 0,
                 hitTargets: [],
+                powerRatio: powerRatio, // [New] 伤害/效果加成比例
             });
 
             p.lightSpiritTimer = spiritDuration;
@@ -2312,10 +2376,18 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                                 // 对召唤物的处理
                                 const pushDist = 50;
                                 enemy.pos = Utils.add(enemy.pos, Utils.mult(knockbackDir, pushDist));
+                                // [New] Apply Damage scaling with powerRatio
+                                const damage = stats.lightSpiritDamage * (spirit.powerRatio || 1);
+                                (enemy as any).hp -= damage;
+                                if ((enemy as any).hp <= 0) killEntity(enemy, spirit.ownerId);
                             } else {
-                                // 对玩家的击退
+                                // 对玩家的击退与伤害
                                 applyKnockback(enemy, knockbackDir, stats.lightSpiritChargeKnockback);
                                 interruptAction(enemy); // Light Spirit hit interrupts
+
+                                // [New] Apply Damage scaling with powerRatio
+                                const damage = stats.lightSpiritDamage * (spirit.powerRatio || 1);
+                                takeDamage(enemy, damage, CharacterType.MAGIC, DamageType.MAGIC);
                             }
 
                             // 视觉效果
@@ -2680,19 +2752,25 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const applyKnockback = (target: PlayerState, dir: Vector2, force: number) => {
-        const chargeConfig = getActiveChargeConfig(target);
-        if (chargeConfig && chargeConfig.rules.hasSuperArmor) {
-            force *= 0.2; // 80% Resistance
-        }
+        // [Tenacity System] Apply knockback resistance (Base + State + Buffs)
+        const tenacity = getTenacity(target);
+        force *= (1 - tenacity.knockbackResistance);
 
-        // [New] Magic Shield Immunity (Immovable Object)
-        if ((target.magicShieldHp || 0) > 0) {
+        // Fully immune to knockback (Atomic Object)
+        if (force <= 0) {
             return;
         }
 
         const impulse = force * 2;
         const dv = Utils.mult(dir, impulse / target.mass);
         target.vel = Utils.add(target.vel, dv);
+
+        // Limit Max Speed (Cap speed to avoid physics glitches)
+        const currentSpeed = Math.sqrt(target.vel.x * target.vel.x + target.vel.y * target.vel.y);
+        const MAX_PHYSICS_SPEED = 30; // Hard cap
+        if (currentSpeed > MAX_PHYSICS_SPEED) {
+            target.vel = Utils.mult(Utils.normalize(target.vel), MAX_PHYSICS_SPEED);
+        }
 
         target.forcedMoveTimer = 1.0;
     };
@@ -5675,7 +5753,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         if (p.apparitionPhase === 'DISAPPEARING') {
             // 消失阶段：模拟黑洞吞噬效果
-            const progress = 1 - (p.apparitionTimer || 0) / 1.0; // 0 -> 1
+            const progress = 1 - (p.apparitionTimer || 0) / 0.5; // 0 -> 1 (0.5s duration)
 
             // 生成向球心收缩的粒子（像被吸入黑洞）
             const particleCount = Math.floor(2 + Math.random() * 2); // 每帧生成2-3个粒子
@@ -5725,14 +5803,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 阶段切换
             if (p.apparitionTimer! <= 0) {
                 p.apparitionPhase = 'FLYING';
-                p.apparitionTimer = 1.0; // 飞行阶段1秒
-                // 播放传送开始音效
-                Sound.playSkill('BLINK');
+                p.apparitionTimer = 0.5; // 飞行阶段0.5秒
             }
         }
         else if (p.apparitionPhase === 'FLYING') {
             // 飞行阶段：闪电形态飞行
-            const progress = 1 - (p.apparitionTimer || 0) / 1.0; // 0 -> 1
+            const progress = 1 - (p.apparitionTimer || 0) / 0.5; // 0 -> 1 (0.5s duration)
 
             // 使用 easeInOutCubic 缓动使移动更流畅
             const easedProgress = progress < 0.5
@@ -5792,7 +5868,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             // 阶段切换
             if (p.apparitionTimer! <= 0) {
                 p.apparitionPhase = 'APPEARING';
-                p.apparitionTimer = 0.4;
+                p.apparitionTimer = 0.2;
                 p.pos = { ...endPos };
 
                 // 播放到达音效和屏幕震动
