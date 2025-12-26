@@ -38,6 +38,8 @@ export const STATUS_CONFIG: Record<string, {
   revive: { label: '复活|有精神', color: '#22d3ee', nature: 'positive', floatingTextCD: 2000, propName: 'isDead', autoInit: false },
 };
 
+// Unified Charge/Channel State Configuration
+
 export const MAP_SIZE = { width: 2000, height: 2000 };
 export const VIEWPORT_PADDING = 200;
 
@@ -148,6 +150,7 @@ export const CHAR_STATS = {
     thrustMaxDmg: 550, // Buffed from 350
     thrustMaxRange: 380, // Slight range buff
     thrustChargeTime: 1.2, // Faster charge
+    thrustCooldown: 4000, // 4s cooldown
 
     // Pillar Smash (Skill)
     skillCooldown: 8000,
@@ -160,6 +163,7 @@ export const CHAR_STATS = {
     smashChargeTime: 1.5,
     smashKnockbackMin: 10000,
     smashKnockbackMax: 30000,
+    smashMaxHoldTime: 1,
   },
   [CharacterType.CAT]: {
     hp: 150, // Extremely low HP
@@ -255,6 +259,103 @@ export const CHAR_STATS = {
     avadaMaxDamage: 2500,      // 最大伤害(需低血量+高MP)
     avadaMpDrainRate: 80,      // 蓄力时MP消耗速度/秒
   }
+};
+
+// Unified Charge/Channel State Configuration
+export const CHARGE_CONFIG: Record<string, {
+  character: CharacterType;
+  label: string;
+  tags: string[];
+  rules: {
+    canBeInterrupted: boolean;
+    movementMultiplier: number;
+    hasSuperArmor: boolean;
+    preventsBasicAttack: boolean;
+    locksAim: boolean;
+    isAirborne: boolean;
+  };
+  cooldownProperty?: string;
+  maxCooldown?: number;
+  resetProperties?: Record<string, any>;
+}> = {
+  WUKONG_THRUST: {
+    character: CharacterType.WUKONG,
+    label: '戳棍蓄力',
+    tags: ['skill', 'right_click', 'charge'],
+    rules: {
+      canBeInterrupted: true,
+      movementMultiplier: 0.3,
+      hasSuperArmor: true,
+      preventsBasicAttack: true,
+      locksAim: false,
+      isAirborne: false,
+    },
+    cooldownProperty: 'wukongThrustTimer',
+    maxCooldown: CHAR_STATS[CharacterType.WUKONG].thrustCooldown / 1000,
+    resetProperties: { wukongChargeState: 'NONE', wukongChargeTime: 0 },
+  },
+  WUKONG_SMASH: {
+    character: CharacterType.WUKONG,
+    label: '立棍蓄力',
+    tags: ['skill', 'ultimate', 'charge'],
+    rules: {
+      canBeInterrupted: true,
+      movementMultiplier: 0,
+      hasSuperArmor: true,
+      preventsBasicAttack: true,
+      locksAim: false,
+      isAirborne: false,
+    },
+    cooldownProperty: 'skillCooldown',
+    maxCooldown: CHAR_STATS[CharacterType.WUKONG].skillCooldown / 1000,
+    resetProperties: { wukongChargeState: 'NONE', wukongChargeTime: 0, wukongChargeHoldTimer: 0 },
+  },
+  CAT_CHARGE: {
+    character: CharacterType.CAT,
+    label: '飞扑蓄力',
+    tags: ['skill', 'left_click', 'charge'],
+    rules: {
+      canBeInterrupted: true,
+      movementMultiplier: 0.2,
+      hasSuperArmor: false,
+      preventsBasicAttack: true,
+      locksAim: false,
+      isAirborne: false,
+    },
+    cooldownProperty: 'pounceCooldown',
+    maxCooldown: CHAR_STATS[CharacterType.CAT].pounceCooldown / 1000,
+    resetProperties: { catIsCharging: false },
+  },
+  CAT_POUNCE: {
+    character: CharacterType.CAT,
+    label: '飞扑中',
+    tags: ['skill', 'pounce', 'airborne'],
+    rules: {
+      canBeInterrupted: true,
+      movementMultiplier: 1,
+      hasSuperArmor: false,
+      preventsBasicAttack: true,
+      locksAim: false,
+      isAirborne: true,
+    },
+    resetProperties: { isPouncing: false },
+  },
+  MAGIC_AVADA: {
+    character: CharacterType.MAGIC,
+    label: '阿瓦达蓄力',
+    tags: ['skill', 'ultimate', 'charge', 'channel'],
+    rules: {
+      canBeInterrupted: true,
+      movementMultiplier: 0,
+      hasSuperArmor: false,
+      preventsBasicAttack: true,
+      locksAim: true,
+      isAirborne: false,
+    },
+    cooldownProperty: 'skillCooldown',
+    maxCooldown: CHAR_STATS[CharacterType.MAGIC].skillCooldown / 1000,
+    resetProperties: { magicUltCharging: false, magicUltChargeTime: 0 },
+  },
 };
 
 export const DEFAULT_HAZARD_AFFINITY = {

@@ -117,6 +117,7 @@ export interface PlayerState extends GameEntity {
   wukongLastAttackTime: number; // For rendering attack animations
   wukongLastAttackType: 'COMBO_1' | 'COMBO_2' | 'COMBO_SMASH' | 'SKILL_SMASH' | 'THRUST' | 'NONE';
   wukongLastChargePct: number; // Store charge % at moment of release for rendering correct length
+  wukongLastAttackAngle: number; // Store aim angle at moment of attack for stable animation rendering
   wukongUltKnockbackCharge?: number; // [New] Track if knocked back by Wukong Ult (>= 0.8 trigger)
   wukongUltSourceDamage?: number; // [New] Store original damage for bonus calc
 

@@ -3,7 +3,7 @@ import {
     CharacterType, GameState, PlayerState, Vector2, TankMode, GroundEffect, Obstacle, Drone, DamageType, DangerZone
 } from '../types';
 import {
-    MAP_SIZE, PHYSICS, CHAR_STATS, STATUS_CONFIG, MAGIC_SPELL_LINES, TERRAIN_CONFIG, HAZARD_AFFINITY, DEFAULT_HAZARD_AFFINITY
+    MAP_SIZE, PHYSICS, CHAR_STATS, STATUS_CONFIG, CHARGE_CONFIG, MAGIC_SPELL_LINES, TERRAIN_CONFIG, HAZARD_AFFINITY, DEFAULT_HAZARD_AFFINITY
 } from '../constants';
 
 import * as Utils from '../utils';
@@ -555,9 +555,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     const range = CHAR_STATS.WUKONG.smashMaxRange;
                     let timeLeft = 0;
                     if (enemy.wukongChargeTime < enemy.wukongMaxCharge) {
-                        timeLeft = (enemy.wukongMaxCharge - enemy.wukongChargeTime) + 1.0;
+                        timeLeft = (enemy.wukongMaxCharge - enemy.wukongChargeTime) + CHAR_STATS.WUKONG.smashMaxHoldTime;
                     } else {
-                        timeLeft = Math.max(0, 1.0 - enemy.wukongChargeHoldTimer);
+                        timeLeft = Math.max(0, CHAR_STATS.WUKONG.smashMaxHoldTime - enemy.wukongChargeHoldTimer);
                     }
 
                     dangerZones.push({
@@ -863,6 +863,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             wukongLastAttackTime: 0,
             wukongLastAttackType: 'NONE',
             wukongLastChargePct: 0,
+            wukongLastAttackAngle: 0,
 
             // Cat
             lives: stats.maxLives || 1, // 9 lives for cat
@@ -951,7 +952,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const p = getHumanPlayer();
         if (p.isDead || p.isBot) return;
         if (p.type === CharacterType.WUKONG && e.code === 'Space' && p.skillCooldown <= 0) {
-            if (p.wukongChargeState === 'NONE' && canUseUltimate(p)) {
+            if (!e.repeat && p.wukongChargeState === 'NONE' && canUseUltimate(p)) {
                 p.wukongChargeState = 'SMASH';
                 p.wukongChargeTime = 0;
                 p.wukongChargeHoldTimer = 0;
@@ -1068,18 +1069,65 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     // --- COMBAT LOGIC ---
 
-    // Helper: Interrupts any channeling/charging actions (Wukong, Cat, etc.)
+    // =====================================================
+    // [Unified Charge System] Helper Functions
+    // =====================================================
+
+    // Get the active charge state ID for a player (returns null if not charging)
+    const getActiveChargeId = (p: PlayerState): string | null => {
+        if (p.type === CharacterType.WUKONG) {
+            if (p.wukongChargeState === 'THRUST') return 'WUKONG_THRUST';
+            if (p.wukongChargeState === 'SMASH') return 'WUKONG_SMASH';
+        }
+        if (p.type === CharacterType.CAT) {
+            if (p.isPouncing) return 'CAT_POUNCE';
+            if (p.catIsCharging) return 'CAT_CHARGE';
+        }
+        if (p.type === CharacterType.MAGIC) {
+            if (p.magicUltCharging) return 'MAGIC_AVADA';
+        }
+        return null;
+    };
+
+    // Get the charge config for a player's current charge state
+    const getActiveChargeConfig = (p: PlayerState) => {
+        const id = getActiveChargeId(p);
+        return id ? CHARGE_CONFIG[id] : null;
+    };
+
+    // Interrupt a specific charge state by ID
+    const interruptChargeById = (target: PlayerState, chargeId: string) => {
+        const config = CHARGE_CONFIG[chargeId];
+
+        if (config) {
+            // [State Reset] Apply reset properties
+            if (config.resetProperties) {
+                Object.entries(config.resetProperties).forEach(([key, value]) => {
+                    (target as any)[key] = value;
+                });
+            }
+
+            // [Interrupt Penalty] Apply 50% cooldown penalty
+            if (config.cooldownProperty && config.maxCooldown) {
+                const currentCd = (target as any)[config.cooldownProperty] || 0;
+                const penalty = config.maxCooldown * 0.5;
+                // Only apply penalty if current CD is less than the penalty
+                if (currentCd < penalty) {
+                    (target as any)[config.cooldownProperty] = penalty;
+                }
+            }
+        }
+    };
+
+    // Uses CHARGE_CONFIG to determine if the charge can be interrupted
     const interruptAction = (target: PlayerState) => {
-        if (target.type === CharacterType.WUKONG) {
-            target.wukongChargeState = 'NONE';
-            target.wukongChargeTime = 0;
-            target.wukongChargeHoldTimer = 0;
+        const chargeId = getActiveChargeId(target);
+        if (!chargeId) return;
+
+        const config = CHARGE_CONFIG[chargeId];
+        if (config && config.rules.canBeInterrupted) {
+            interruptChargeById(target, chargeId);
         }
-        if (target.type === CharacterType.CAT) {
-            target.catIsCharging = false;
-            target.isPouncing = false;
-        }
-        // Future characters can be added here
     };
 
     // [New] Centralized Magma Interaction Helper
@@ -1317,6 +1365,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // Hiss Logic refactored to use applyStatus
                 const dir = Utils.normalize(Utils.sub(e.pos, p.pos));
                 applyKnockback(e, dir, force);
+                interruptAction(e); // Hiss interrupts
 
                 // 哈气效果 - applyStatus 内部会自动调用 interruptAction 打断蓄力
                 if (isLastLife) {
@@ -1807,6 +1856,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                     const knockbackForce = 4; // Use the lower force requested by user
                     applyKnockback(enemy, p.pos, knockbackForce);
+                    interruptAction(enemy); // Magic Shield impact interrupts
                 }
             });
         }
@@ -2265,6 +2315,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             } else {
                                 // 对玩家的击退
                                 applyKnockback(enemy, knockbackDir, stats.lightSpiritChargeKnockback);
+                                interruptAction(enemy); // Light Spirit hit interrupts
                             }
 
                             // 视觉效果
@@ -2348,6 +2399,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     // 物理击退
                     const dir = Utils.normalize(Utils.sub(t.pos, g.pos));
                     applyKnockback(t, dir, 800);
+                    interruptAction(t); // Pyro Magama Explosion interrupts
 
                     // 使用统一的 applyStatus 处理爆燃 (视觉+机制)
                     applyStatus(t, 'burst', 0, owner.id);
@@ -2387,6 +2439,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // Visuals & Logic
         p.wukongLastAttackTime = performance.now();
+        p.wukongLastAttackAngle = p.aimAngle; // Store attack direction
 
         if (p.wukongComboStep === 0) p.wukongLastAttackType = 'COMBO_1';
         else if (p.wukongComboStep === 1) p.wukongLastAttackType = 'COMBO_2';
@@ -2435,6 +2488,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         // Damage Player
                         takeDamage(target, damage, CharacterType.WUKONG, DamageType.PHYSICAL);
                         applyKnockback(target, knockbackDir, knockback);
+                        interruptAction(target); // Wukong Combo interrupts
                         spawnParticles(target.pos, 5, stats.color, 4);
                     }
                     Sound.playHit();
@@ -2457,11 +2511,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         p.wukongChargeState = 'NONE';
         p.wukongChargeTime = 0;
         p.attackCooldown = 0.5;
-        p.wukongThrustTimer = 4.0; // Cooldown 4s
+        p.wukongThrustTimer = stats.thrustCooldown / 1000;
 
         p.wukongLastAttackTime = performance.now();
         p.wukongLastAttackType = 'THRUST';
         p.wukongLastChargePct = chargePct; // Store for render
+        p.wukongLastAttackAngle = p.aimAngle; // Store attack direction
 
         Sound.playSkill('THRUST');
 
@@ -2486,6 +2541,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 } else {
                     takeDamage(target, damage, CharacterType.WUKONG, DamageType.PHYSICAL);
                     applyKnockback(target, dir, 800 * (1 + chargePct));
+                    interruptAction(target); // Wukong Thrust interrupts
                     spawnParticles(target.pos, 12, stats.color, 8);
                     // 右键命中敌人飘字
                     p.statusLabel = "呔!";
@@ -2514,6 +2570,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         p.wukongLastAttackTime = performance.now();
         p.wukongLastAttackType = 'SKILL_SMASH'; // Distinct type for Skill
         p.wukongLastChargePct = chargePct;
+        p.wukongLastAttackAngle = p.aimAngle; // Store attack direction
 
         Sound.playSkill('SMASH_HIT');
 
@@ -2580,6 +2637,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // Use defined stats for knockback
                 const currentKnockback = stats.smashKnockbackMin + (stats.smashKnockbackMax - stats.smashKnockbackMin) * chargePct;
                 applyKnockback(target, pushDir, currentKnockback);
+                interruptAction(target); // Wukong Smash interrupts
 
                 // 眩晕所有命中的球
                 applyStatus(target, 'stun', 2.0);
@@ -2622,8 +2680,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     const applyKnockback = (target: PlayerState, dir: Vector2, force: number) => {
-        // Unified Super Armor for ANY Wukong charge state
-        if (target.type === CharacterType.WUKONG && target.wukongChargeState !== 'NONE') {
+        const chargeConfig = getActiveChargeConfig(target);
+        if (chargeConfig && chargeConfig.rules.hasSuperArmor) {
             force *= 0.2; // 80% Resistance
         }
 
@@ -2637,7 +2695,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         target.vel = Utils.add(target.vel, dv);
 
         target.forcedMoveTimer = 1.0;
-        interruptAction(target);
     };
 
     const killEntity = (entity: any, killerId: string) => {
@@ -3629,7 +3686,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     } else if (p.wukongChargeState === 'SMASH') {
                         // Start holding timer
                         p.wukongChargeHoldTimer += dt;
-                        if (p.wukongChargeHoldTimer >= 1.0) {
+                        // [Fix] Use same constant as AI for consistency
+                        if (p.wukongChargeHoldTimer >= CHAR_STATS[CharacterType.WUKONG].smashMaxHoldTime) {
                             releaseWukongSmash(p);
                         }
                     }
@@ -4146,7 +4204,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
                 // Thrust Charge (Skill - Skip if taunted)
                 if (!ai.aiSkipSkills && distToTarget > 150 && distToTarget < 300 && ai.wukongChargeState === 'NONE' && ai.wukongThrustTimer <= 0) {
-                    ai.wukongChargeState = 'THRUST'; ai.wukongMaxCharge = 0.8; ai.wukongChargeTime = 0;
+                    ai.wukongChargeState = 'THRUST';
+                    ai.wukongMaxCharge = CHAR_STATS[CharacterType.WUKONG].thrustChargeTime;
+                    ai.wukongChargeTime = 0;
                 }
 
                 // Smash Charge (Skill - Skip if taunted)
@@ -4187,13 +4247,17 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
 
             if (ai.wukongChargeState !== 'NONE') {
+                // [Fix] Disable anti-stuck logic while charging
+                ai.stuckTimer = 0;
+
                 ai.wukongChargeTime += dt;
                 if (ai.wukongChargeTime >= ai.wukongMaxCharge) {
                     ai.wukongChargeTime = ai.wukongMaxCharge;
                     if (ai.wukongChargeState === 'THRUST') releaseWukongThrust(ai);
                     else if (ai.wukongChargeState === 'SMASH') {
                         ai.wukongChargeHoldTimer += dt;
-                        if (ai.wukongChargeHoldTimer >= 1.0) releaseWukongSmash(ai);
+                        // [Fix] Use defined max hold time instead of hardcoded 1s
+                        if (ai.wukongChargeHoldTimer >= CHAR_STATS[CharacterType.WUKONG].smashMaxHoldTime) releaseWukongSmash(ai);
                     }
                 }
             }
@@ -5110,6 +5174,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     const force = baseForce * damageFactor;
 
                     applyKnockback(target, pushDir, force);
+                    interruptAction(target); // Explosion interrupts (Artillery, Death)
                     applyStatus(target, 'slow', 2.4, ownerId);
                 }
             }
@@ -5482,6 +5547,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             target.vel = Utils.add(target.vel, dv);
                         } else {
                             applyKnockback(target, dir, knockback);
+                            interruptAction(target); // Patronus hit interrupts
                         }
 
                         // 3. Visuals
@@ -7275,7 +7341,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         }
                     }
 
-                    ctx.rotate(p.aimAngle);
+                    // Use stored attack angle for stable animation
+                    ctx.rotate(p.wukongLastAttackAngle);
                     const progress = animTime / animDuration;
 
                     if (p.wukongLastAttackType === 'COMBO_1' || p.wukongLastAttackType === 'COMBO_2') {
@@ -7359,7 +7426,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             // 4. [New] Circular Shockwave Visual
                             const waveAlpha = 1 - smashProg;
                             ctx.save();
-                            ctx.rotate(-p.aimAngle); // Draw shockwave relative to player orientation
+                            ctx.rotate(-p.wukongLastAttackAngle); // Draw shockwave relative to stored attack orientation
                             ctx.strokeStyle = `rgba(254, 240, 138, ${waveAlpha * 0.5})`;
                             ctx.lineWidth = 4;
                             ctx.beginPath();
