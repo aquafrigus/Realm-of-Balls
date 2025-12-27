@@ -142,7 +142,7 @@ class SoundManager {
         }
     }
 
-    playSkill(type: 'MAGMA_THROW' | 'MAGMA_LAND' | 'MAGMA_EXPLODE' | 'SWITCH' | 'RELOAD' | 'CHARGE_START' | 'SMASH_HIT' | 'THRUST' | 'SCOOPER_WARNING' | 'SHIELD_ACTIVATE' | 'SHIELD_CRACK' | 'SHIELD_SHATTER' | 'BLINK') {
+    playSkill(type: 'MAGMA_THROW' | 'MAGMA_LAND' | 'MAGMA_IGNITE' | 'MAGMA_EXPLODE' | 'SWITCH' | 'RELOAD' | 'CHARGE_START' | 'SMASH_HIT' | 'THRUST' | 'SCOOPER_WARNING' | 'SHIELD_ACTIVATE' | 'SHIELD_CRACK' | 'SHIELD_SHATTER' | 'BLINK' | 'AVADA_KEDAVRA') {
         this.init();
         if (!this.ctx) return;
         if (type === 'MAGMA_THROW') {
@@ -154,6 +154,8 @@ class SoundManager {
             // Splash/Hiss sound
             this.createNoise(0.5, 0.4, 800, 'lowpass');
             this.createOsc('sine', 150, 0.3, 0.2, 50);
+        } else if (type === 'MAGMA_IGNITE') {
+            this.createNoise(0.4, 0.1, 1500, 'highpass');
         } else if (type === 'MAGMA_EXPLODE') {
             // Heavy burst
             this.createOsc('sawtooth', 50, 0.7, 0.8, 10);
@@ -193,6 +195,19 @@ class SoundManager {
             this.createOsc('sine', 600, 0.25, 0.2, 150); // 更低的起始频率，更柔和
             // 2. 低通噪音，模拟风声而非尖锐的气流
             this.createNoise(0.25, 0.15, 800, 'lowpass'); // 低通滤波让声音更柔和
+        } else if (type === 'AVADA_KEDAVRA') {
+            // [New] 阿瓦达啃大瓜: 闪电劈中音效 (Lightning Strike)
+            // 1. "CRACK" - 剧烈的炸裂声 (White Noise Burst)
+            this.createNoise(0.3, 0.8, 4000, 'highpass');
+
+            // 2. "TEAR" - 空气被撕裂的尖啸 (Sawtooth Drop)
+            // 从极高频瞬间跌落，模拟闪电划破长空
+            this.createOsc('sawtooth', 3000, 0.2, 0.4, 100);
+
+            // 3. "THUNDER" - 随后的雷声 (Low Rumble) - 增强版
+            this.createNoise(1.2, 0.9, 500, 'lowpass'); // 更长、更响的雷声
+            this.createOsc('square', 50, 1.2, 0.5, 10); // 更强的低频轰鸣
+            this.createOsc('triangle', 30, 1.0, 0.4, 5); // 额外的超低频震动
         }
     }
 

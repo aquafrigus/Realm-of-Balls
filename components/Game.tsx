@@ -474,7 +474,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         obstacles: generateObstacles(),
         floatingTexts: [],
         camera: { x: 0, y: 0 },
-        gameStatus: 'PLAYING'
+        gameStatus: 'PLAYING',
+        timeScale: 1.0,
+        imageCache: {}
     });
 
     // 获取本地玩家（用于输入控制、UI显示）
@@ -800,7 +802,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // 1. 先确定形态（如果是魔法球）
         const magicForm = type === CharacterType.MAGIC
-            ? (Math.random() < 0.00000000001 ? 'BLACK' : 'WHITE') // 暂时先将黑化概率设置为超小概率，后续需要调试黑魔法球时再调整
+            ? (Math.random() < 1 ? 'BLACK' : 'WHITE') // 暂时先将黑化概率设置为超小概率，后续需要调试黑魔法球时再调整
             : undefined;
         // 2. 根据形态选择颜色和主题色
         let color = stats.color;
@@ -910,8 +912,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             magicShieldHp: 0,
             magicShieldTimer: 0,
             lightSpiritTimer: 0,
-            magicUltCharging: false,
-            magicUltChargeTime: 0,
+            avadaCharging: false,
+            avadaChargeTime: 0,
             magicChargeTimer: 0,
             ccImmuneTimer: 0,
             apparitionPhase: 'NONE',
@@ -1088,7 +1090,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (p.catIsCharging) return 'CAT_CHARGE';
         }
         if (p.type === CharacterType.MAGIC) {
-            if (p.magicUltCharging) return 'MAGIC_AVADA';
+            if (p.avadaCharging) return 'MAGIC_AVADA';
         }
         return null;
     };
@@ -1837,7 +1839,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        let spell = 2;
+        let spell = 1;
         // const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
@@ -1881,6 +1883,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             Sound.playShot('MAGIC');
             p.statusLabel = MAGIC_SPELL_LINES.disarm + '!';
+            p.statusLabelColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
             // 瞬间进入CD
             const expelliarmusCD = stats.expelliarmusCooldown / 1000;
             p.secondarySkillCooldown = expelliarmusCD;
@@ -1904,6 +1907,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             p.magicShieldTimer = stats.armorDuration / 1000;
             p.magicShieldDamageLevel = 0; // [New] Reset damage level
             p.statusLabel = MAGIC_SPELL_LINES.armor + '!';
+            p.statusLabelColor = p.magicForm === 'WHITE' ? '#fef08a' : '#22c55e';
 
             // Visuals & Sound
             spawnParticles(p.pos, 15, '#c0c0c0', 5, 0.8);
@@ -1984,7 +1988,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const powerRatio = mpSpent / 100;
 
             // 三道银白色冲击波 + 击退
-            // 修改：每一道波都是独立的判定体，随时间扩大
             const waveCount = 3;
             for (let wave = 0; wave < waveCount; wave++) {
                 stateRef.current.groundEffects.push({
@@ -1999,9 +2002,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     powerRatio: powerRatio // [New] Pass scaling
                 });
             }
-
-            // [Removed] Immediate damage loop - moved to updateGroundEffects for dynamic wave collision
-
 
             // 召唤光灵球守护神实体
             const spiritDuration = stats.lightSpiritDuration / 1000;
@@ -2033,75 +2033,122 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             spawnParticles(p.pos, 30, '#f8fafc', 8, 0.8);
 
         } else {
-            // 《阿瓦达啃大瓜》- 黑魔法球（简化版 - 瞬发）
+            // 《阿瓦达啃大瓜》- 黑魔法球（蓄力版）
             // 这不是解控技能，需要检查控制和沉默状态
             if (!canUseUltimate(p)) return;
 
-            const mpSpent = p.mp || 0;
-            if (mpSpent < 80) return; // 至少需要80 MP
+            // Start or Continue Charging
+            if (!p.avadaCharging) {
+                // Init Charge
+                const mpSpent = p.mp || 0;
+                if (mpSpent < 10) return; // Min MP to start
 
-            const hpRatio = p.hp / p.maxHp;
-            // 伤害公式：MP越多、血量越低，伤害越高
-            const damage = Math.min(mpSpent * (2.5 - hpRatio) * 1.2, stats.avadaMaxDamage);
+                p.avadaCharging = true;
+                p.avadaChargeTime = 0;
 
-            p.mp = 0;
-            p.skillCooldown = stats.skillCooldown / 1000;
-
-            // 发射贯穿光束（作为特殊投射物处理）
-            const dir = { x: Math.cos(p.aimAngle), y: Math.sin(p.aimAngle) };
-
-            // Origin at wand tip
-            const wandLength = 32;
-            const startPos = Utils.add(p.pos, Utils.mult(dir, p.radius + wandLength));
-
-            // 射线检测命中第一个敌人
-            const enemies = getEnemies(p);
-            let closestHit: any = null;
-            let closestDist = Infinity;
-
-            enemies.forEach(enemy => {
-                // 简化的射线-圆碰撞检测
-                const toEnemy = Utils.sub(enemy.pos, startPos);
-                const proj = Utils.dot(toEnemy, dir);
-                if (proj < 0) return; // 在背后
-
-                const closest = Utils.add(startPos, Utils.mult(dir, proj));
-                const distToLine = Utils.dist(enemy.pos, closest);
-
-                if (distToLine < enemy.radius + 15 && proj < closestDist) {
-                    closestDist = proj;
-                    closestHit = enemy;
-                }
-            });
-
-            if (closestHit) {
-                if ('isSummon' in closestHit) {
-                    closestHit.hp -= damage;
-                    if (closestHit.hp <= 0) killEntity(closestHit, p.id);
-                } else {
-                    takeDamage(closestHit, damage, CharacterType.MAGIC, DamageType.MAGIC);
-                }
-                spawnParticles(closestHit.pos, 25, '#22c55e', 8, 0.6);
-                closestHit.statusLabel = `${Math.round(damage)}!`;
+                // [Bullet Time] & [Filter] - Now handled globally in update loop
+                Sound.playSkill('CHARGE_START');
             }
 
-            // 光束视觉效果（添加地面效果来渲染）
-            stateRef.current.particles.push({
-                id: Math.random().toString(),
-                pos: startPos,
-                vel: Utils.mult(dir, 50),
-                life: 0.5,
-                maxLife: 0.5,
-                color: '#22c55e',
-                size: 20,
-            });
+            // Charging Logic (Per Frame)
+            const drainRate = stats.avadaMpDrainRate; // 80 MP/s
+            // Estimate Real Delta Time (0.016s per frame)
+            const estimatedRealDt = 0.016;
 
-            p.statusLabel = MAGIC_SPELL_LINES.avada + '!';
 
-            // 屏幕震动
-            stateRef.current.screenShakeTimer = 0.6;
-            stateRef.current.screenShakeIntensity = 400;
+            p.mp = Math.max(0, (p.mp || 0) - drainRate * estimatedRealDt);
+            p.avadaChargeTime = (p.avadaChargeTime || 0) + estimatedRealDt;
+
+            // Force release if out of MP
+            if (p.mp <= 0) {
+                releaseAvada(p);
+            }
         }
+    };
+
+    const releaseAvada = (p: PlayerState) => {
+        if (!p.avadaCharging) return;
+
+        const stats = CHAR_STATS[CharacterType.MAGIC];
+
+        // Capture state before reset
+        const remainingMp = p.mp || 0;
+
+        // Reset State
+        p.avadaCharging = false;
+        p.avadaChargeTime = 0;
+        // timeScale and globalFilter are reset automatically by the global loop check
+
+        // [Spell Line] Display after charging complete
+        p.statusLabel = MAGIC_SPELL_LINES.avada + '!';
+        p.statusLabelColor = '#22c55e';
+
+        // Consume all remaining MP
+        p.mp = 0;
+
+        // Calculate Total Fuel (Only Remaining MP counts)
+        const totalFuel = remainingMp;
+
+        // Damage Calculation
+        const hpRatio = p.hp / p.maxHp;
+        const baseDamage = 50 + totalFuel * (2.5 - hpRatio) * 2.0;
+        const damage = Math.min(baseDamage, stats.avadaMaxDamage);
+
+        // ALWAYS Apply Cooldown (Prevent loop)
+        p.skillCooldown = stats.skillCooldown / 1000;
+
+        // Calculate Scale Factor (0.0 - 1.0) based on damage output
+        const powerRatio = Math.max(0.1, damage / stats.avadaMaxDamage);
+
+        // Visuals: Green Beam
+        const dir = { x: Math.cos(p.aimAngle), y: Math.sin(p.aimAngle) };
+        const wandLength = 32;
+        const startPos = Utils.add(p.pos, Utils.mult(dir, p.radius + wandLength));
+
+        // Raycast
+        const enemies = getEnemies(p);
+
+        // Screen Shake
+        stateRef.current.screenShakeTimer = 0.8;
+        stateRef.current.screenShakeIntensity = 500;
+
+        // Sound
+        Sound.playSkill('AVADA_KEDAVRA');
+
+        // Hit Logic
+        enemies.forEach(enemy => {
+            // Line-Circle Intersection
+            const toEnemy = Utils.sub(enemy.pos, startPos);
+            const proj = Utils.dot(toEnemy, dir);
+            if (proj < 0) return;
+
+            const closest = Utils.add(startPos, Utils.mult(dir, proj));
+            const dist = Utils.dist(enemy.pos, closest);
+
+            if (dist < enemy.radius + 20) {
+                // HIT
+                takeDamage(enemy, damage, CharacterType.MAGIC, DamageType.MAGIC);
+                spawnParticles(enemy.pos, 30, '#22c55e', 8, 1.0);
+
+                // Knockback
+                applyKnockback(enemy, dir, 100);
+            }
+        });
+
+        // Beam Render Object (Animation)
+        stateRef.current.groundEffects.push({
+            id: Math.random().toString(),
+            pos: startPos,
+            radius: 20, // Used for start width
+            life: 0.5,
+            maxLife: 0.5,
+            type: 'AVADA_BEAM',
+            ownerId: p.id,
+            length: 2000,
+            width: 20 + 130 * powerRatio, // Significantly increased range (20 -> 150)
+            rotation: p.aimAngle,
+            powerRatio: powerRatio // Controls opacity
+        });
     };
 
     const deployDrone = (p: PlayerState) => {
@@ -2503,7 +2550,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         });
 
         if (anyMarked) {
-            // Optional: Ignite sound? For now, the explosion sound is handled in updateGroundEffects
+            Sound.playSkill('MAGMA_IGNITE');
         }
     };
 
@@ -3888,6 +3935,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             if (keysRef.current['Space']) {
                 handleMagicUltimate(p);
+            } else {
+                // [Release Check] Avada Kedavra
+                if (p.avadaCharging) {
+                    releaseAvada(p);
+                }
             }
         }
     };
@@ -4959,7 +5011,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             p.pos = Utils.add(p.pos, Utils.mult(p.vel, dt * 60));
             p.life -= dt;
 
-            // --- 粒子特效 (保持原样) ---
+            // --- 粒子特效 ---
             if (p.projectileType === 'MAGMA_PROJ') {
                 if (Math.random() < 0.6) {
                     state.particles.push({
@@ -5030,12 +5082,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     state.groundEffects.push(newPool);
 
                     if (!shouldDetonate) {
-                        // Regular Impact sound/explosion (small visual)
                         Sound.playSkill('MAGMA_LAND');
                         createExplosion(state, p.pos, 50, 0, p.ownerId, true, false);
                     } else {
-                        // Optional: Play a "fizzle/ignite" start sound? 
-                        // For now we just wait for the big pop.
+                        Sound.playSkill('MAGMA_IGNITE');
                     }
                 }
             }
@@ -6187,6 +6237,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         ctx.fillRect(0, 0, width, height);
 
         ctx.save();
+        // [Global Filter]
+        if (state.globalFilter) {
+            ctx.filter = state.globalFilter;
+        }
+
         try {
             ctx.translate(-state.camera.x, -state.camera.y);
 
@@ -6369,8 +6424,198 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         ctx.arc(g.pos.x, g.pos.y, g.radius * 1.1, 0, Math.PI * 2);
                         ctx.fill();
                     }
+                } else if (g.type === 'AVADA_BEAM') {
+                    // [New] Dynamic Smoky Beam Rendering
+                    ctx.save();
+                    const lifeRatio = g.life / g.maxLife;
+                    const powerRatio = g.powerRatio || 0.5;
+                    const beamWidth = g.width || 40;
+                    const length = g.length || 2000;
+
+                    // Beam fades out over life
+                    const alpha = Math.min(1.0, lifeRatio * 2.0); // Stay opaque for first half, then fade
+
+                    ctx.translate(g.pos.x, g.pos.y);
+                    ctx.rotate(g.rotation || 0);
+
+                    // 1. Dark Smoky Outer Glow (Widens with power)
+                    ctx.globalAlpha = alpha * 0.4;
+                    const smokeWidth = beamWidth * 1.5;
+                    // Create multiple chaotic sine waves for smoke edges
+                    const time = Date.now() / 200;
+
+                    // Black/Green Smoke Gradient
+                    const smokeGrad = ctx.createLinearGradient(0, -smokeWidth, 0, smokeWidth);
+                    smokeGrad.addColorStop(0, 'rgba(0, 10, 0, 0)');
+                    smokeGrad.addColorStop(0.3, '#022c22'); // Darker "Swamp" Green
+                    smokeGrad.addColorStop(0.7, '#022c22');
+                    smokeGrad.addColorStop(1, 'rgba(0, 10, 0, 0)');
+                    ctx.fillStyle = smokeGrad;
+
+                    // Draw wavy smoke (Layer 1)
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    const beamStartGradientLen = 200; // 200px transition zone like aiming
+
+                    for (let x = 0; x < length; x += 40) {
+                        // Expansion Factor from 0 to 1
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        const currentSmokeWidth = smokeWidth * expandFactor;
+
+                        // Chaos noise
+                        const noise = (Math.sin(x * 0.02 + time) * 15
+                            + Math.cos(x * 0.05 - time) * 10) * expandFactor;
+                        ctx.lineTo(x, -currentSmokeWidth / 2 + noise);
+                    }
+                    ctx.lineTo(length, 0);
+                    for (let x = length; x >= 0; x -= 40) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        const currentSmokeWidth = smokeWidth * expandFactor;
+
+                        const noise = (Math.sin(x * 0.02 + time + Math.PI) * 15
+                            + Math.cos(x * 0.05 - time + 1) * 10) * expandFactor;
+                        ctx.lineTo(x, currentSmokeWidth / 2 + noise);
+                    }
+                    ctx.fill();
+
+                    // NEW: Electric Smoke Layer (Lighter, Faster)
+                    if (powerRatio > 0.3) {
+                        ctx.globalAlpha = alpha * 0.3;
+                        ctx.fillStyle = '#14532d'; // Green-900
+                        ctx.beginPath();
+                        ctx.moveTo(0, 0);
+                        const fastTime = Date.now() / 100;
+                        for (let x = 0; x < length; x += 30) {
+                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                            const w = beamWidth * 1.2 * expandFactor;
+                            const noise = (Math.sin(x * 0.05 + fastTime) * 20) * expandFactor;
+                            ctx.lineTo(x, -w / 2 + noise);
+                        }
+                        ctx.lineTo(length, 0);
+                        for (let x = length; x >= 0; x -= 30) {
+                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                            const w = beamWidth * 1.2 * expandFactor;
+                            const noise = (Math.cos(x * 0.05 - fastTime) * 20) * expandFactor;
+                            ctx.lineTo(x, w / 2 + noise);
+                        }
+                        ctx.fill();
+                    }
+
+
+                    // 2. Main Beam Core with "Flowing Energy"
+                    ctx.globalAlpha = alpha * (0.6 + 0.4 * powerRatio);
+
+                    // Create a flow effect pattern
+                    const flowTime = Date.now() / 50; // Fast flow
+
+                    ctx.fillStyle = '#22c55e'; // Base Green
+
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+
+                    // Top Edge of Core
+                    for (let x = 0; x <= length; x += 20) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        // Flowing width modulation
+                        const flow = Math.sin(x * 0.05 - flowTime) * (5 + 10 * powerRatio);
+                        const w = (beamWidth / 2 + flow) * expandFactor;
+                        ctx.lineTo(x, -w);
+                    }
+                    // Bottom Edge of Core
+                    for (let x = length; x >= 0; x -= 20) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        // Offset flow phase for asymmetry
+                        const flow = Math.sin(x * 0.05 - flowTime + Math.PI) * (5 + 10 * powerRatio);
+                        const w = (beamWidth / 2 + flow) * expandFactor;
+                        ctx.lineTo(x, w);
+                    }
+                    ctx.fill();
+
+                    // Internal "Streamer" / Core Brightness (High Flow)
+                    ctx.globalAlpha = alpha * 0.9;
+                    ctx.fillStyle = '#86efac'; // Bright core
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    for (let x = 0; x <= length; x += 50) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        // Tight, fast moving bright core
+                        const flow = Math.sin(x * 0.1 - flowTime * 1.5) * (beamWidth * 0.2);
+                        const w = (beamWidth * 0.3 + flow) * expandFactor;
+                        ctx.lineTo(x, -w);
+                    }
+                    for (let x = length; x >= 0; x -= 50) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        const flow = Math.sin(x * 0.1 - flowTime * 1.5 + Math.PI) * (beamWidth * 0.2);
+                        const w = (beamWidth * 0.3 + flow) * expandFactor;
+                        ctx.lineTo(x, w);
+                    }
+                    ctx.fill();
+
+                    // 3. "Poison Bubbles" and "Miasma" (Random internal chaos)
+                    ctx.globalAlpha = alpha * 0.6;
+                    ctx.fillStyle = '#4ade80'; // Toxic bright green for bubbles
+
+                    for (let x = 0; x < length; x += 15 + Math.random() * 20) {
+                        // Deterministic psuedo-random positions based on x and beam id (using pos.x as seed proxy)
+                        const bubbleSeed = (x * 13 + g.pos.x) % 100;
+
+                        // Bubbles rising/wobbling
+                        const bubbleY = Math.sin(x * 0.1 + flowTime * 2 + bubbleSeed) * beamWidth * 0.4;
+                        const bubbleSize = 2 + Math.sin(x * 0.7 + bubbleSeed) * 2 + powerRatio * 3; // 2-7px
+
+                        // Bubbles
+                        if (bubbleSeed > 30) { // 70% chance
+                            ctx.beginPath();
+                            ctx.arc(x, bubbleY, bubbleSize, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+
+                        // Miasma Splotches (Dark purple/black gas pockets)
+                        if (bubbleSeed < 40) {
+                            ctx.fillStyle = 'rgba(20, 0, 20, 0.5)'; // Dark purple haze
+                            const miasmaSize = 10 + Math.random() * 10;
+                            ctx.beginPath();
+                            ctx.arc(x + 10, -bubbleY, miasmaSize, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.fillStyle = '#4ade80'; // Reset for bubbles
+                        }
+                    }
+
+                    // 4. Electric Arcs
+                    const baseArcs = 1; // Always visible
+                    const extraArcs = Math.floor(powerRatio * 2);
+                    const totalArcs = baseArcs + extraArcs;
+
+                    ctx.globalAlpha = alpha * 1.0; // Max Visibility
+                    ctx.strokeStyle = '#dcfce7'; // White-Green
+                    ctx.lineWidth = 1.5 + powerRatio * 2.5; // 1.5px to 4px
+                    ctx.shadowColor = '#dcfce7'; // Bright glow
+                    ctx.shadowBlur = 15;
+
+                    for (let i = 0; i < totalArcs; i++) {
+                        ctx.beginPath();
+                        let y = 0;
+                        ctx.moveTo(0, 0);
+                        // Offset each arc slightly in time/phase so they don't overlap perfectly
+                        const arcPhase = i * 123.45;
+
+                        for (let x = 0; x < length; x += 15) { // Denser lightning points
+                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+
+                            // Jagged movement
+                            const jitter = (Math.sin(x * 0.3 + flowTime * 5 + arcPhase) * 10
+                                + Math.cos(x * 1.1 + arcPhase) * 5) * expandFactor;
+
+                            // Bound within beam width roughly
+                            y = jitter * (beamWidth / 20);
+                            ctx.lineTo(x, y);
+                        }
+                        ctx.stroke();
+                    }
+                    ctx.shadowBlur = 0;
+
+                    ctx.restore();
                 } else if (g.type === 'CRACK') {
-                    // Fading Crack
                     const alpha = g.life / g.maxLife;
                     ctx.save();
                     ctx.translate(g.pos.x, g.pos.y);
@@ -7379,6 +7624,89 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         ctx.restore();
                     }
 
+                    // [Avada Kedavra Aim Assist] Show trajectory line during charging
+                    if (p.avadaCharging) {
+                        ctx.save();
+
+                        // Calculate wand tip position
+                        const wandLength = 32;
+                        const wandTip = {
+                            x: p.radius + wandLength,
+                            y: 0
+                        };
+
+                        // Rotate to aim angle
+                        ctx.rotate(p.aimAngle);
+
+                        const beamLength = 2000;
+                        const beamWidth = 40; // Width of the beam
+                        const time = Date.now() / 1000;
+
+                        // Draw smoky beam with undulating edges
+                        ctx.globalAlpha = 0.15; // High transparency
+
+                        // Create gradient for depth
+                        const gradient = ctx.createLinearGradient(wandTip.x, 0, wandTip.x + beamLength, 0);
+                        gradient.addColorStop(0, 'rgba(134, 239, 172, 0.4)'); // Brighter at start
+                        gradient.addColorStop(0.5, 'rgba(34, 197, 94, 0.3)');
+                        gradient.addColorStop(1, 'rgba(34, 197, 94, 0.1)'); // Fade at end
+
+                        // Draw multiple layers with wave distortion for smoky effect
+                        const transitionDistance = 240; // Distance over which beam expands from point to full width
+
+                        for (let layer = 0; layer < 3; layer++) {
+                            ctx.beginPath();
+
+                            const layerOffset = layer * 0.3;
+                            const waveFreq = 0.01 + layer * 0.002;
+                            const waveAmp = 3 + layer * 2;
+
+                            // Start from wand tip (point)
+                            ctx.moveTo(wandTip.x, wandTip.y);
+
+                            // Top edge with sine wave and width expansion
+                            for (let x = 0; x <= beamLength; x += 10) {
+                                // Calculate width expansion factor (0 to 1)
+                                const widthFactor = Math.min(x / transitionDistance, 1);
+                                const currentWidth = beamWidth * widthFactor;
+
+                                const wave = Math.sin(x * waveFreq + time * 2 + layerOffset) * waveAmp * widthFactor;
+                                ctx.lineTo(wandTip.x + x, wandTip.y - currentWidth / 2 + wave);
+                            }
+
+                            // Bottom edge with inverse sine wave and width expansion
+                            for (let x = beamLength; x >= 0; x -= 10) {
+                                const widthFactor = Math.min(x / transitionDistance, 1);
+                                const currentWidth = beamWidth * widthFactor;
+
+                                const wave = Math.sin(x * waveFreq + time * 2 + layerOffset + Math.PI) * waveAmp * widthFactor;
+                                ctx.lineTo(wandTip.x + x, wandTip.y + currentWidth / 2 + wave);
+                            }
+
+                            ctx.closePath();
+                            ctx.fillStyle = gradient;
+                            ctx.fill();
+                        }
+
+                        // Add a brighter center line for clarity
+                        ctx.globalAlpha = 0.25;
+                        ctx.strokeStyle = 'rgba(134, 239, 172, 0.6)';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.moveTo(wandTip.x, wandTip.y);
+
+                        // Center line with subtle wave
+                        for (let x = 0; x <= beamLength; x += 20) {
+                            const wave = Math.sin(x * 0.008 + time * 3) * 1.5;
+                            ctx.lineTo(wandTip.x + x, wandTip.y + wave);
+                        }
+                        ctx.stroke();
+
+                        ctx.globalAlpha = 1.0;
+
+                        ctx.restore();
+                    }
+
                     ctx.restore();
 
                     if (p.invincibleTimer && p.invincibleTimer > 0) ctx.globalAlpha = 1;
@@ -7481,7 +7809,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 ctx.fillStyle = t.color;
                 ctx.shadowBlur = 0;
                 ctx.font = 'bold 16px sans-serif';
-                ctx.fillText(t.text, t.pos.x - 20, t.pos.y);
+                ctx.textAlign = 'center';
+                ctx.fillText(t.text, t.pos.x, t.pos.y);
                 ctx.restore();
             });
 
@@ -8003,7 +8332,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const loop = (now: number) => {
                 if (!isRunning) return; // Fix for HMR ghost loops
 
-                const dt = Math.min((now - lastTime) / 1000, 0.1);
+                // [Time Scale] Apply global time scale for bullet time effects
+                const rawDt = Math.min((now - lastTime) / 1000, 0.1);
+                const dt = rawDt * (stateRef.current.timeScale || 1.0);
                 lastTime = now;
 
                 update(dt);
@@ -8233,6 +8564,18 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             console.error("Draw error:", err);
                         }
                     }
+                }
+
+                // [Global Effects Check]
+                // Check if ANY player is charging Avada Kedavra
+                const isAnyAvadaCharging = st.players.some(p => p.avadaCharging);
+
+                if (isAnyAvadaCharging) {
+                    stateRef.current.timeScale = 0.1;
+                    stateRef.current.globalFilter = 'grayscale(100%) brightness(0.9)';
+                } else {
+                    stateRef.current.timeScale = 1.0;
+                    stateRef.current.globalFilter = undefined;
                 }
 
                 if (st.gameStatus === 'PLAYING') {

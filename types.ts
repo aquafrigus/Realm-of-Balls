@@ -207,8 +207,8 @@ export interface PlayerState extends GameEntity {
   magicShieldHp?: number;         // 盔甲护身护盾值
   magicShieldTimer?: number;      // 盔甲护身持续时间
   lightSpiritTimer?: number;      // 光灵球持续时间
-  magicUltCharging?: boolean;     // 黑魔法大招蓄力状态
-  magicUltChargeTime?: number;    // 蓄力时间
+  avadaCharging?: boolean;     // 阿瓦达啃大瓜蓄力状态
+  avadaChargeTime?: number;    // 阿瓦达蓄力时间
   magicChargeTimer?: number;      // 普攻连续使用计时
   ccImmuneTimer?: number;         // 控制免疫计时器
   magicShieldShakeTimer?: number;  // 护盾受击抖动计时器
@@ -267,7 +267,7 @@ export interface GroundEffect {
   radius: number;
   life: number;
   maxLife: number;
-  type: 'MAGMA_POOL' | 'WUKONG_SMASH' | 'CRACK' | 'SCOOPER_SMASH' | 'SCOOPER_WARNING' | 'START_BEACON' | 'LIGHT_SPIRIT' | 'PATRONUS_WAVE';
+  type: 'MAGMA_POOL' | 'WUKONG_SMASH' | 'CRACK' | 'SCOOPER_SMASH' | 'SCOOPER_WARNING' | 'START_BEACON' | 'LIGHT_SPIRIT' | 'PATRONUS_WAVE' | 'AVADA_BEAM';
   ownerId: string;
   width?: number;
   length?: number;
@@ -332,6 +332,8 @@ export interface GameState {
   screenShakeTimer?: number;
   screenShakeIntensity?: number;
   gameStatus: 'PLAYING' | 'VICTORY' | 'DEFEAT' | 'PAUSED';
+  timeScale: number; // Global time scale for bullet time
+  globalFilter?: string; // CSS filter string for global visual effects
   imageCache?: Record<string, HTMLImageElement>;
 }
 
