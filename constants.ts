@@ -311,7 +311,7 @@ export const CHARGE_CONFIG: Record<string, {
       canBeInterrupted: true,
       movementMultiplier: 0,
       preventsBasicAttack: true,
-      locksAim: false,
+      locksAim: true, // [Fix] Lock aim to allow dodging/counter-play
       isAirborne: false,
     },
     tenacity: { knockbackResistance: 0.8 },

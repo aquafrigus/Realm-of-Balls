@@ -560,11 +560,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         timeLeft = Math.max(0, CHAR_STATS.WUKONG.smashMaxHoldTime - enemy.wukongChargeHoldTimer);
                     }
 
+                    // [Fix] Match Hitbox: Rectangular Directional Zone
+                    const aimDir = { x: Math.cos(enemy.aimAngle), y: Math.sin(enemy.aimAngle) };
+
                     dangerZones.push({
-                        type: 'CIRCLE',
+                        type: 'RECT',
                         hazardType: 'SKILL',
-                        center: enemy.pos,
-                        radius: range + 10,
+                        p1: enemy.pos, // Start at Wukong center
+                        p2: Utils.add(enemy.pos, Utils.mult(aimDir, range)),
+                        width: CHAR_STATS.WUKONG.smashWidthMax, // Use max width for safety
                         timeLeft: timeLeft,
                         weight: skillWeight
                     });
@@ -2687,7 +2691,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             ownerId: p.id
         });
 
-        // 6. Hit Detection - 命中所有球 (改为圆形 AOE 以匹配视觉指示器)
+        // 6. Hit Detection - Rectangle (Directional Segment)
         const allTargets = stateRef.current.players.filter(t => t.id !== p.id && !t.isDead);
         const droneTargets = stateRef.current.drones.filter(d => d.ownerId !== p.id && d.hp > 0);
 
@@ -2695,10 +2699,20 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // 处理玩家目标
         allTargets.forEach(target => {
-            const distToPlayer = Utils.dist(target.pos, p.pos);
-            // [修复] 范围判定不再额外加上 width/2，确保与圆形指示器一致
-            // 使用 dist < range 确保球心在圈内才命中，解决“球在圈外仍受伤”的问题
-            if (distToPlayer < range) {
+            // 改为基于线段距离的判定，匹配长方形指示器，不再是圆形 AOE
+            const distToLine = Utils.distToSegment(target.pos, startPos, endPos);
+
+            // Collision: distToLine < (halfWidth + targetRadius)
+            // Add minimal padding (+10) for leniency
+            // [Fix] Clip to Circular Range: Ensure we don't hit beyond the max range circle (corners)
+            const distToSource = Utils.dist(target.pos, p.pos);
+            if (distToLine < (width / 2 + target.radius + 10) && distToSource < range) {
+                // Directionality Check: Ensure target is not behind Wukong
+                const toTarget = Utils.sub(target.pos, p.pos);
+                const dot = toTarget.x * aimDir.x + toTarget.y * aimDir.y;
+                // Allow targets slightly behind the exact center point (since Wukong has a radius)
+                if (dot < -p.radius) return;
+
                 hitAnyPlayer = true;
 
                 // [友军伤害] 对所有命中的目标造成伤害
@@ -2727,8 +2741,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // 处理无人机目标
         droneTargets.forEach(target => {
-            const distToPlayer = Utils.dist(target.pos, p.pos);
-            if (distToPlayer < range) {
+            const distToLine = Utils.distToSegment(target.pos, startPos, endPos);
+            const distToSource = Utils.dist(target.pos, p.pos);
+
+            if (distToLine < (width / 2 + target.radius + 5) && distToSource < range) {
+                // Directionality Check
+                const toTarget = Utils.sub(target.pos, p.pos);
+                const dot = toTarget.x * aimDir.x + toTarget.y * aimDir.y;
+                if (dot < -p.radius) return;
+
                 target.hp -= damage;
                 spawnParticles(target.pos, 10, '#6ee7b7', 8);
                 if (target.hp <= 0) killEntity(target, p.id);
@@ -4047,30 +4068,95 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         let evasionDir: Vector2 | null = null;
         let isCurrentlyInsideDanger = false;
         let bestEscapeVec: Vector2 | null = null;
+        let isPathBlockedByMagma = false; // [New] Flag for skill usage decision
+
+        // Pathfinding Optimization 1: "Commitment" / "Beserker Mode"
+        const canCommit = target && Utils.dist(ai.pos, target.pos) < 250 && ai.hp > ai.maxHp * 0.3;
 
         // AI Movement Speed (Pixels/Second approx)
-        // MaxSpeed = (Accel / (1-Friction)) * 60
-        // Accel = 0.2 * StatSpeed
-        // Friction = 0.9 => 1-F = 0.1
-        // Vmax = 2.0 * StatSpeed (per frame) => 120 * StatSpeed (per sec)
-        // 考虑到起步加速时间，打个折 0.8
         const aiSpeedPPS = 120 * CHAR_STATS[ai.type].speed * 0.8;
 
         for (const zone of dangerZones) {
+            // Commit Logic: Ignore Magma/Lava if committing
+            if (canCommit && zone.hazardType === 'MAGMA') continue;
+
             const { inside, escapeVec, distToEdge } = getPointDangerInfo(ai.pos, zone);
 
-            if (inside) {
+            // Pathfinding Optimization: Predictive Avoidance (Lookahead)
+            // Check if we are GOING TO BE inside danger soon
+            let predictiveInside = false;
+            let predictiveEscapeVec = escapeVec;
+            let predictiveDist = distToEdge;
+
+            if (!inside && !isCurrentlyInsideDanger) {
+                // Look ahead 0.5s (or approx 20-30 pixels)
+                // Use current Moving Direction or Aim Direction
+                const moveVec = Utils.mag(ai.vel) > 10 ? Utils.normalize(ai.vel) : { x: Math.cos(ai.aimAngle), y: Math.sin(ai.aimAngle) };
+                const lookAheadDist = 40;
+                const lookAheadPos = Utils.add(ai.pos, Utils.mult(moveVec, lookAheadDist));
+
+                const predInfo = getPointDangerInfo(lookAheadPos, zone);
+                if (predInfo.inside) {
+                    predictiveInside = true;
+                    predictiveEscapeVec = predInfo.escapeVec;
+                    predictiveDist = predInfo.distToEdge;
+                }
+            }
+
+            if (inside || predictiveInside) {
                 // [Unified] Only evade hazards with positive danger weight
-                if ((zone.weight ?? 1.0) <= 0) continue;
+                const weight = zone.weight ?? 1.0;
+                if (weight <= 0) continue;
 
-                // Check Feasibility
-                const timeNeeded = distToEdge / aiSpeedPPS;
+                // [New] Detect if Magma is blocking path (for Skill usage)
+                if (zone.hazardType === 'MAGMA') isPathBlockedByMagma = true;
 
-                // If we can escape in time (plus a small reaction buffer 0.1s), DO IT.
-                // If inevitable (TimeNeeded > TimeLeft), ignored as per user request ("continue previous strategy").
+                // Check Feasibility (Use predictive info if that's what triggered it)
+                const checkDist = inside ? distToEdge : predictiveDist;
+                const timeNeeded = checkDist / aiSpeedPPS;
+                const escapeV = inside ? escapeVec : predictiveEscapeVec;
+
                 if (timeNeeded < zone.timeLeft + 0.1) {
                     isCurrentlyInsideDanger = true;
-                    bestEscapeVec = escapeVec;
+
+                    // Pathfinding Optimization: Differentiate Strategy by Hazard Type
+                    // A. Terrain (Magma/Water/Wall) -> Skirt (Tangent) to keep moving
+                    // B. Skill (Wukong Smash) -> Escape (Normal) to get out fast
+                    const isTerrain = zone.hazardType === 'MAGMA' || zone.hazardType === 'WATER' || zone.hazardType === 'WALL';
+
+                    if (target && isTerrain) {
+                        // "Skirting" / "Tangential Evasion" for Terrain
+                        const tangent1 = { x: -escapeV.y, y: escapeV.x };
+                        const tangent2 = { x: escapeV.y, y: -escapeV.x };
+
+                        const toTarget = Utils.normalize(Utils.sub(target.pos, ai.pos));
+
+                        // Choose tangent closer to target direction
+                        const dot1 = tangent1.x * toTarget.x + tangent1.y * toTarget.y;
+                        const chosenTangent = dot1 > 0 ? tangent1 : tangent2;
+
+                        // Blend Normal (safety) and Tangent (progress)
+                        const safetyWeight = inside ? 0.6 : 0.3;
+                        bestEscapeVec = Utils.normalize(Utils.add(Utils.mult(escapeV, safetyWeight), chosenTangent));
+                    } else {
+                        // "Hybrid Retreat-Dodge" for Skills
+                        // Blend "Direct Escape" (Sideways) with "Retreat" (Away from Source)
+                        let retreatDir = { x: 0, y: 0 };
+                        if (zone.type === 'RECT' && zone.p1) {
+                            retreatDir = Utils.normalize(Utils.sub(ai.pos, zone.p1));
+                        } else if (zone.type === 'CIRCLE' && zone.center) {
+                            retreatDir = Utils.normalize(Utils.sub(ai.pos, zone.center));
+                        }
+
+                        const dodgeWeight = 0.5;
+                        const retreatWeight = 0.5;
+
+                        bestEscapeVec = Utils.normalize(Utils.add(
+                            Utils.mult(escapeV, dodgeWeight),
+                            Utils.mult(retreatDir, retreatWeight)
+                        ));
+                    }
+
                     break; // Flee immediately from the first threat found (Simplification)
                 }
             }
@@ -4080,7 +4166,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (isCurrentlyInsideDanger) {
             // ENTER / REFRESH Evasion Mode
             ai.aiIsEscapingHazard = true;
-            ai.aiHazardEscapeTimer = 0.6; // Commit to evading for at least 0.6s
+            ai.aiHazardEscapeTimer = 0.3; // Low timer for responsive skirting
             if (bestEscapeVec) ai.aiHazardEscapeDir = bestEscapeVec;
             evasionDir = ai.aiHazardEscapeDir || null;
         } else {
@@ -4238,7 +4324,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             } else {
                 if (target) {
                     // 随机尝试蓄力 (Skill - Skip if taunted)
-                    if (!ai.aiSkipSkills && distToTarget > 150 && Math.random() < 0.01 && ai.pounceCooldown <= 0) {
+                    // [Updated] Trigger if obstructed by Magma
+                    const shouldPounce = Math.random() < 0.01 || (isPathBlockedByMagma && distToTarget < 300);
+                    if (!ai.aiSkipSkills && distToTarget > 150 && shouldPounce && ai.pounceCooldown <= 0) {
                         ai.catIsCharging = true;
                         ai.catChargeStartTime = performance.now();
                     }
@@ -4346,10 +4434,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             ai.currentWeaponRange = aiRange;
             ai.currentWeaponAngle = aiAngle;
 
-            if (evasionDir) {
+            if (target) {
+                // [Fix] Decouple Aim from Evasion: Always aim at target if exists (Kiting)
+                ai.aimAngle = Math.atan2(target.pos.y - ai.pos.y, target.pos.x - ai.pos.x);
+            } else if (evasionDir) {
+                // Only look at evasion dir if no target
                 ai.aimAngle = Math.atan2(finalMoveDir.y, finalMoveDir.x);
-            } else if (target) {
-                // only if target exists
+            } else {
                 ai.aimAngle = Math.atan2(moveDir.y, moveDir.x);
             }
 
