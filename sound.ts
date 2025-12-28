@@ -106,8 +106,8 @@ class SoundManager {
         if (!this.ctx) return;
 
         if (type === 'PYRO') {
-            this.createNoise(0.4, 0.015, 1000, 'highpass');
-            this.createOsc('sine', 400, 0.1, 0.05, 300);
+            this.createNoise(0.4, 0.03, 1000, 'highpass');
+            this.createOsc('sine', 400, 0.1, 0.02, 300);
         } else if (type === 'ARTILLERY') {
             this.createOsc('square', 100, 0.4, 0.5, 10);
             this.createNoise(0.5, 0.5, 600);

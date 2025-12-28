@@ -8,7 +8,7 @@ import {
 
 import * as Utils from '../utils';
 import { Sound } from '../sound';
-import { CHARACTER_IMAGES } from '../images';
+import { CHARACTER_IMAGES, MAGIC_SKILL_BLACK } from '../images';
 import type { GameConfig } from './CustomGameSetup';
 
 interface GameProps {
@@ -802,7 +802,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // 1. 先确定形态（如果是魔法球）
         const magicForm = type === CharacterType.MAGIC
-            ? (Math.random() < 1 ? 'BLACK' : 'WHITE') // 暂时先将黑化概率设置为超小概率，后续需要调试黑魔法球时再调整
+            ? (Math.random() < 0.1 ? 'BLACK' : 'WHITE') // 魔法球黑化概率
             : undefined;
         // 2. 根据形态选择颜色和主题色
         let color = stats.color;
@@ -1816,7 +1816,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 });
 
                 // [Modified] Reward being far from the nearest enemy, but CAP it.
-                // We want "safe enough", not "mathematically farthest (corners)".
                 score += Math.min(minEnemyDist, 1000) * 2.0;
 
                 // Penalize being close to ANY enemy (Safety threshold)
@@ -1850,8 +1849,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
         // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        let spell = 1;
-        // const spell = Math.floor(Math.random() * 3);
+        const spell = Math.floor(Math.random() * 3);
 
         if (spell === 0) {
             // 《除你武器》
@@ -2065,9 +2063,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const drainRate = stats.avadaMpDrainRate; // 80 MP/s
 
             // [Fix] Calculate Real Delta Time to ensure consistent charging speed
-            // regardless of Bullet Time or Frame Rate lags.
-            // dt passed in is already scaled by timeScale (e.g. 0.0016 in bullet time).
-            // We want real time (0.016), so we divide by timeScale.
             const currentTimeScale = stateRef.current.timeScale || 1;
             const realDt = (currentTimeScale > 0.001) ? dt / currentTimeScale : 0.016;
 
@@ -2148,8 +2143,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 takeDamage(enemy, damage, CharacterType.MAGIC, DamageType.MAGIC);
                 spawnParticles(enemy.pos, 30, '#22c55e', 8, 1.0);
 
-                // Knockback
-                applyKnockback(enemy, dir, 100);
+                // Knockback (Increased for dramatic effect)
+                applyKnockback(enemy, dir, 600);
             }
         });
 
@@ -2768,8 +2763,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const distToLine = Utils.distToSegment(target.pos, startPos, endPos);
 
             // Collision: distToLine < (halfWidth + targetRadius)
-            // Add minimal padding (+10) for leniency
-            // [Fix] Clip to Circular Range: Ensure we don't hit beyond the max range circle (corners)
             const distToSource = Utils.dist(target.pos, p.pos);
             if (distToLine < (width / 2 + target.radius + 10) && distToSource < range) {
                 // Directionality Check: Ensure target is not behind Wukong
@@ -3285,10 +3278,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 obs.type === 'LAVA' && Utils.checkCircleRectCollision(p1.pos, p1.radius, obs).collided
             );
 
-            const wasBurning = p1.burnTimer > 0 || (p1.flameExposure || 0) > 0;
+            // [Fix] Only burn status (not burst) should allow sticky lava entry
+            // burnTimer indicates actual burn status, flameExposure can be set by burst which shouldn't allow entry
+            const wasBurning = p1.burnTimer > 0;
             // Sticky logic for Lava:
             // 1. Center in Lava
-            // 2. Already Ignited AND Touching AND (No other higher priority terrain) (Sticky)
+            // 2. Already Burning (burn status) AND Touching AND (No other higher priority terrain) (Sticky)
             // 3. Forced AND Touching AND (No other higher priority terrain) (Entry)
             const shouldBeInLava = isCenterInLava || ((wasBurning || isForced) && isTouchingLava && (!topTerrain || topTerrain.type === 'LAVA'));
 
@@ -3699,8 +3694,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             return; // Taunt/Charm overrides normal input
         }
 
-
-
         // Hard CC Check (Stun, Sleep, Petrify) - Return early, no input allowed
         if (isControlled(p)) {
             p.vel = Utils.mult(p.vel, 0.8);
@@ -3939,8 +3932,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         else if (p.type === CharacterType.MAGIC) {
             // 魔法球输入处理
             if (keysRef.current['MouseLeft']) {
-                // [修复] 添加状态检查
-                if (!isControlled(p) && p.silenceTimer <= 0) {
+                // [修复] 添加状态检查 + 大招蓄力期间禁止普攻
+                if (!isControlled(p) && p.silenceTimer <= 0 && !p.avadaCharging) {
                     p.magicChargeTimer = (p.magicChargeTimer || 0) + dt;
                     handleMagicCurse(p, worldMouse);
                 } else {
@@ -4698,8 +4691,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
                 }
 
-                // 普攻：攻击范围内随机发射
-                if (ai.attackCooldown <= 0 && distToTarget < stats.curseRange - 50 && (ai.mp || 0) >= stats.curseManaCost) {
+                // 普攻：攻击范围内随机发射（大招蓄力期间禁止普攻）
+                if (ai.attackCooldown <= 0 && distToTarget < stats.curseRange - 50 && (ai.mp || 0) >= stats.curseManaCost && !ai.avadaCharging) {
                     if (Math.random() < 0.3) { // 30% 概率每帧尝试
                         handleMagicCurse(ai, target.pos);
                     }
@@ -4718,8 +4711,40 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
                 }
 
-                // 大招：MP充足且敌人在范围内
-                if (ai.skillCooldown <= 0 && (ai.mp || 0) > 100) {
+                // [Fix] Avada Charge Maintenance & Release
+                if (ai.avadaCharging) {
+                    // Must call handleUltimate every frame to drain MP and charge up
+                    handleMagicUltimate(ai, dt);
+
+                    // Aim correction while charging (slow turn or lock)
+                    if (target) {
+                        const targetAngle = Math.atan2(target.pos.y - ai.pos.y, target.pos.x - ai.pos.x);
+                        // Slower turn rate while charging
+                        const diff = targetAngle - ai.aimAngle;
+                        ai.aimAngle += Utils.clamp(diff, -0.05, 0.05); // Very slow tracking
+                        ai.angle = ai.aimAngle;
+                    }
+
+                    // Release Logic
+                    let shouldRelease = false;
+
+                    // 1. Target lost/dead
+                    if (!target || target.isDead) shouldRelease = true;
+
+                    // 2. Out of MP (handleUltimate handles this, but good to double check)
+                    if ((ai.mp || 0) <= 0) shouldRelease = true;
+
+                    // 3. Random release time (simulate aiming duration 0.5s - 1.5s)
+                    if ((ai.avadaChargeTime || 0) > 1.0 + Math.random() * 1.5) shouldRelease = true;
+
+                    // 4. Line of Sight (Optional, maybe keep it simple for now and just fire)
+
+                    if (shouldRelease) {
+                        releaseAvada(ai);
+                    }
+                }
+                // Start Ultimate: MP充足且敌人在范围内
+                else if (ai.skillCooldown <= 0 && (ai.mp || 0) > 100) {
                     const shouldUlt =
                         (ai.magicForm === 'WHITE' && distToTarget < stats.patronusRange && Math.random() < 0.02) ||
                         (ai.magicForm === 'BLACK' && distToTarget < 500 && Math.random() < 0.015) ||
@@ -4788,14 +4813,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
         }
 
-        // [Final Blind Jitter] Centralized jitter for AI indicators & skill directions
-        // Applying this at the end ensures character-specific "stable" tracking logic 
-        // doesn't overwrite the blind effect.
         if ((ai.blindTimer || 0) > 0) {
             const jitter = (Math.random() - 0.5) * 1.5; // Same spread as player (approx 85 deg)
             ai.aimAngle += jitter;
-            // Also update body angle if they use it for weapons (like Pyro flamethrower or Tank body-based aim)
-            // But usually aimAngle is the primary direction for projectiles/indicators.
         }
     };
 
@@ -4811,23 +4831,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             lastPyroSoundTimeRef.current = now;
         }
 
-        // Particle logic REMOVED in favor of procedural rendering (drawFlamethrower)
-        // This solves the performance bottleneck fundamentally.
-        // Damage is handled by checkCollisions or similar logic elsewhere, 
-        // using the geometric cone properties below.
-
-        // [Note] Damage logic is cone-based and separate from visuals.
-        // See surrounding code for target iteration if any.
-        // (Actually, checking the file content again, the damage logic WAS inside here below particle spawn)
-        // Correct! The loop below "Hit Logic" MUST remain. 
-        // So I only delete the "stateRef.current.particles.push" blocks.
-
         const range = p.currentWeaponRange || CHAR_STATS[CharacterType.PYRO].flamethrowerRange;
         const cone = p.currentWeaponAngle || CHAR_STATS[CharacterType.PYRO].flamethrowerAngle;
-        // const tip = Utils.add(p.pos, Utils.mult({ x: Math.cos(p.aimAngle), y: Math.sin(p.aimAngle) }, p.radius + 5));
-
-        // [Removed] Particle Spawning Blocks (Core, Body, Smoke, Sparks, Glow)
-        // Procedural rendering in drawFlamethrower() replaces this.
 
         // [友军伤害] 使用 getAllAttackTargets 获取所有可攻击目标（包括友军）
         const targets = getAllAttackTargets(p);
@@ -4845,9 +4850,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     if ('isSummon' in e) {
                         e.hp -= 350 * dt;
                         if (e.hp <= 0) killEntity(e, p.id); // [新增] 召唤物死亡处理
-                        // Visual feedback for hit can remain as minimal particles? 
-                        // Or remove to strict "no particle"? 
-                        // Let's keep minimal hit particles for feedback, but extremely sparse.
                         if (Math.random() < 0.1) spawnParticles(e.pos, 1, '#ef4444', 2, 0.5);
                     } else {
                         // 使用统一的免疫检查：火焰免疫检测
@@ -6116,7 +6118,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         const dist = Math.sqrt(offsetX * offsetX + offsetY * offsetY);
 
         // Define Leash Range
-        // Normal: Allow seeing just a bit further than screen edge (~ half screen width)
         // Tank Artillery: Double range
         let maxDist = Math.min(innerWidth, innerHeight) * 0.6;
 
@@ -6137,15 +6138,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
         // Auto-return / Center pull
-        // The standard mapping (mouse - cx) * 1.6 implies that if mouse is at center, offset is 0.
-        // So "auto-return" is natural when mouse moves back. 
-        // We just ensure we add the offset to the target.
 
         targetX += offsetX;
         targetY += offsetY;
 
         // Map Clamping (World Bounds) + Extra padding for camera
-        // Allow camera to see a bit of void to indicate edge
         targetX = Utils.clamp(targetX, -innerWidth / 2, MAP_SIZE.width + innerWidth / 2 - innerWidth);
         targetY = Utils.clamp(targetY, -innerHeight / 2, MAP_SIZE.height + innerHeight / 2 - innerHeight);
 
@@ -6163,7 +6160,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         if (!Number.isFinite(targetY)) targetY = state.camera.y;
 
         // Smooth Camera Follow
-        // 在移形换影飞行阶段使用更快的追踪速度
         let cameraSpeed = 0.08;
         if (!human.isDead && human.apparitionPhase === 'FLYING') {
             cameraSpeed = 0.25; // 更快的追踪确保不丢失视野
@@ -6182,9 +6178,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     const drawFlamethrower = (ctx: CanvasRenderingContext2D, p: PlayerState) => {
         const stats = CHAR_STATS[CharacterType.PYRO];
         const range = p.currentWeaponRange || stats.flamethrowerRange;
-        // Cone half-angle (radians). Note: stats usually define the full arc or half? 
-        // Logic says 'cone' in fireFlamethrower is used as abs(diff) < cone. So 'cone' is the Half-Angle.
-        // If angleWidth is very large (close range mouse), we must respect it.
         const halfAngle = p.currentWeaponAngle || stats.flamethrowerAngle;
         const tipRadius = p.radius + 5;
 
@@ -6236,12 +6229,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         ctx.fill();
 
         // 4. Procedural Sparks (Stateless)
-        // High intensity, fast moving, realistic embers
-        // [Dynamic] Scale spark count based on flame width (halfAngle)
-        // Narrow flame (small angle) = fewer sparks, Wide flame = more sparks
         const minSparks = 1; // Further reduced for very narrow flames
         const maxSparks = 12;
-        // Assume halfAngle ranges from ~0.1 (narrow) to ~1.5 (wide) radians
         // Map this to spark count
         const angleNormalized = Math.min(1, Math.max(0, (halfAngle - 0.1) / 1.4));
         const sparkCount = Math.round(minSparks + angleNormalized * (maxSparks - minSparks));
@@ -6261,13 +6250,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             const alpha = 1 - Math.pow(dist / range, 2);
             if (alpha < 0) continue;
 
-            // [Refined] Angular Distribution
-            // Use Golden Angle to ensure perfect uniform coverage spread across the cone
-            // (i * goldenRatio) % 1 gives a number 0..1 that avoids clustering
+            // Angular Distribution
             const normalizedSpread = ((i * goldenRatio) % 1 - 0.5) * 2; // -1 to 1
 
             // Time-based Meander (Simulate turbulence)
-            // Function of time and distance
             const meanderFreq = 4.0;
             const meanderAmp = 0.15; // Radians deviation magnitude
             const turbulence = Math.sin(nowSec * meanderFreq + i * 10) * meanderAmp * (dist / range);
@@ -6342,12 +6328,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     // Helper: Draw a "Wavy Sector" using Polar stepping to prevent width explosion
-    // radius: max distance
-    // halfAngle: radians from center axis
-    // step: radial step size
-    // time: animation input
-    // amp: noise amplitude
-    // octaves: detail level
     const drawWavySector = (
         ctx: CanvasRenderingContext2D,
         radius: number,
@@ -6360,14 +6340,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         ctx.moveTo(0, 0);
 
         // 1. Top Edge (angle = -halfAngle)
-        // We step outwards along the radius
         for (let r = 0; r <= radius; r += step) {
             // Base position on the ray
             const bx = r * Math.cos(-halfAngle);
             const by = r * Math.sin(-halfAngle);
 
             // Perpendicular Noise Vector
-            // Vector perpendicular to angle -halfAngle is angle (-halfAngle + PI/2)
             const pAngle = -halfAngle + Math.PI / 2;
             const px = Math.cos(pAngle);
             const py = Math.sin(pAngle);
@@ -6389,7 +6367,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
         // 2. Outer Arc (Connecting Top to Bottom)
-        // Approximate arc with segments
         const arcSteps = 8;
         for (let i = 0; i <= arcSteps; i++) {
             const t = i / arcSteps; // 0 to 1
@@ -6403,7 +6380,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         }
 
         // 3. Bottom Edge (angle = +halfAngle) - Coming back to center
-        // We iterate backwards from r=radius down to 0
         for (let r = radius; r >= 0; r -= step) {
             const bx = r * Math.cos(halfAngle);
             const by = r * Math.sin(halfAngle);
@@ -6443,7 +6419,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         ctx.save();
         // [Optimization] Apply Global Filter via CSS to avoid Canvas 2D render pipeline stall
-        // This fixes the lag spike when entering Avada Kedavra (Bullet Time)
         const desiredFilter = state.globalFilter || 'none';
         if (ctx.canvas.style.filter !== desiredFilter) {
             ctx.canvas.style.filter = desiredFilter;
@@ -6634,197 +6609,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         ctx.arc(g.pos.x, g.pos.y, g.radius * 1.1, 0, Math.PI * 2);
                         ctx.fill();
                     }
-                } else if (g.type === 'AVADA_BEAM') {
-                    // [New] Dynamic Smoky Beam Rendering (Optimized for Performance)
-                    ctx.save();
-                    const lifeRatio = g.life / g.maxLife;
-                    const powerRatio = g.powerRatio || 0.5;
-                    const beamWidth = g.width || 40;
-                    const length = g.length || 2000;
-
-                    // Beam fades out over life
-                    const alpha = Math.min(1.0, lifeRatio * 2.0); // Stay opaque for first half, then fade
-
-                    ctx.translate(g.pos.x, g.pos.y);
-                    ctx.rotate(g.rotation || 0);
-
-                    // 1. Dark Smoky Outer Glow (Widens with power)
-                    ctx.globalAlpha = alpha * 0.4;
-                    const smokeWidth = beamWidth * 1.5;
-                    const time = Date.now() / 200;
-
-                    // Black/Green Smoke Gradient
-                    const smokeGrad = ctx.createLinearGradient(0, -smokeWidth, 0, smokeWidth);
-                    smokeGrad.addColorStop(0, 'rgba(0, 10, 0, 0)');
-                    smokeGrad.addColorStop(0.3, '#022c22'); // Darker "Swamp" Green
-                    smokeGrad.addColorStop(0.7, '#022c22');
-                    smokeGrad.addColorStop(1, 'rgba(0, 10, 0, 0)');
-                    ctx.fillStyle = smokeGrad;
-
-                    // Draw wavy smoke (Layer 1) - Optimized Step (40 -> 80)
-                    ctx.beginPath();
-                    ctx.moveTo(0, 0);
-                    const beamStartGradientLen = 200; // 200px transition zone like aiming
-
-                    for (let x = 0; x < length; x += 80) {
-                        // Expansion Factor from 0 to 1
-                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-                        const currentSmokeWidth = smokeWidth * expandFactor;
-
-                        // Chaos noise
-                        const noise = (Math.sin(x * 0.02 + time) * 15
-                            + Math.cos(x * 0.05 - time) * 10) * expandFactor;
-                        ctx.lineTo(x, -currentSmokeWidth / 2 + noise);
-                    }
-                    ctx.lineTo(length, 0);
-                    for (let x = length; x >= 0; x -= 80) {
-                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-                        const currentSmokeWidth = smokeWidth * expandFactor;
-
-                        const noise = (Math.sin(x * 0.02 + time + Math.PI) * 15
-                            + Math.cos(x * 0.05 - time + 1) * 10) * expandFactor;
-                        ctx.lineTo(x, currentSmokeWidth / 2 + noise);
-                    }
-                    ctx.fill();
-
-                    // NEW: Electric Smoke Layer (Lighter, Faster) - Optimized Step (30 -> 60)
-                    if (powerRatio > 0.3) {
-                        ctx.globalAlpha = alpha * 0.3;
-                        ctx.fillStyle = '#14532d'; // Green-900
-                        ctx.beginPath();
-                        ctx.moveTo(0, 0);
-                        const fastTime = Date.now() / 100;
-                        for (let x = 0; x < length; x += 60) {
-                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-                            const w = beamWidth * 1.2 * expandFactor;
-                            const noise = (Math.sin(x * 0.05 + fastTime) * 20) * expandFactor;
-                            ctx.lineTo(x, -w / 2 + noise);
-                        }
-                        ctx.lineTo(length, 0);
-                        for (let x = length; x >= 0; x -= 60) {
-                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-                            const w = beamWidth * 1.2 * expandFactor;
-                            const noise = (Math.cos(x * 0.05 - fastTime) * 20) * expandFactor;
-                            ctx.lineTo(x, w / 2 + noise);
-                        }
-                        ctx.fill();
-                    }
-
-
-                    // 2. Main Beam Core with "Flowing Energy" - Optimized Step (20 -> 50)
-                    ctx.globalAlpha = alpha * (0.6 + 0.4 * powerRatio);
-
-                    // Create a flow effect pattern
-                    const flowTime = Date.now() / 50; // Fast flow
-
-                    ctx.fillStyle = '#22c55e'; // Base Green
-
-                    ctx.beginPath();
-                    ctx.moveTo(0, 0);
-
-                    // Top Edge of Core
-                    for (let x = 0; x <= length; x += 50) {
-                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-                        // Flowing width modulation
-                        const flow = Math.sin(x * 0.05 - flowTime) * (5 + 10 * powerRatio);
-                        const w = (beamWidth / 2 + flow) * expandFactor;
-                        ctx.lineTo(x, -w);
-                    }
-                    // Bottom Edge of Core
-                    for (let x = length; x >= 0; x -= 50) {
-                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-                        // Offset flow phase for asymmetry
-                        const flow = Math.sin(x * 0.05 - flowTime + Math.PI) * (5 + 10 * powerRatio);
-                        const w = (beamWidth / 2 + flow) * expandFactor;
-                        ctx.lineTo(x, w);
-                    }
-                    ctx.fill();
-
-                    // Internal "Streamer" / Core Brightness (High Flow) - Optimized Step (50 -> 80)
-                    ctx.globalAlpha = alpha * 0.9;
-                    ctx.fillStyle = '#86efac'; // Bright core
-                    ctx.beginPath();
-                    ctx.moveTo(0, 0);
-                    for (let x = 0; x <= length; x += 80) {
-                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-                        // Tight, fast moving bright core
-                        const flow = Math.sin(x * 0.1 - flowTime * 1.5) * (beamWidth * 0.2);
-                        const w = (beamWidth * 0.3 + flow) * expandFactor;
-                        ctx.lineTo(x, -w);
-                    }
-                    for (let x = length; x >= 0; x -= 80) {
-                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-                        const flow = Math.sin(x * 0.1 - flowTime * 1.5 + Math.PI) * (beamWidth * 0.2);
-                        const w = (beamWidth * 0.3 + flow) * expandFactor;
-                        ctx.lineTo(x, w);
-                    }
-                    ctx.fill();
-
-                    // 3. "Poison Bubbles" and "Miasma" (Random internal chaos) - Optimized Density
-                    ctx.globalAlpha = alpha * 0.6;
-                    ctx.fillStyle = '#4ade80'; // Toxic bright green for bubbles
-
-                    // Step 15+rand(20) -> 30+rand(30)
-                    for (let x = 0; x < length; x += 30 + Math.random() * 30) {
-                        // Deterministic psuedo-random positions based on x and beam id (using pos.x as seed proxy)
-                        const bubbleSeed = (x * 13 + g.pos.x) % 100;
-
-                        // Bubbles rising/wobbling
-                        const bubbleY = Math.sin(x * 0.1 + flowTime * 2 + bubbleSeed) * beamWidth * 0.4;
-                        const bubbleSize = 2 + Math.sin(x * 0.7 + bubbleSeed) * 2 + powerRatio * 3; // 2-7px
-
-                        // Bubbles
-                        if (bubbleSeed > 30) { // 70% chance
-                            ctx.beginPath();
-                            ctx.arc(x, bubbleY, bubbleSize, 0, Math.PI * 2);
-                            ctx.fill();
-                        }
-
-                        // Miasma Splotches (Dark purple/black gas pockets)
-                        if (bubbleSeed < 40) {
-                            ctx.fillStyle = 'rgba(20, 0, 20, 0.5)'; // Dark purple haze
-                            const miasmaSize = 10 + Math.random() * 10;
-                            ctx.beginPath();
-                            ctx.arc(x + 10, -bubbleY, miasmaSize, 0, Math.PI * 2);
-                            ctx.fill();
-                            ctx.fillStyle = '#4ade80'; // Reset for bubbles
-                        }
-                    }
-
-                    // 4. Electric Arcs - Optimized Step (15 -> 40)
-                    const baseArcs = 1; // Always visible
-                    const extraArcs = Math.floor(powerRatio * 2);
-                    const totalArcs = baseArcs + extraArcs;
-
-                    ctx.globalAlpha = alpha * 1.0; // Max Visibility
-                    ctx.strokeStyle = '#dcfce7'; // White-Green
-                    ctx.lineWidth = 1.5 + powerRatio * 2.5; // 1.5px to 4px
-                    ctx.shadowColor = '#dcfce7'; // Bright glow
-                    ctx.shadowBlur = 15;
-
-                    for (let i = 0; i < totalArcs; i++) {
-                        ctx.beginPath();
-                        let y = 0;
-                        ctx.moveTo(0, 0);
-                        // Offset each arc slightly in time/phase so they don't overlap perfectly
-                        const arcPhase = i * 123.45;
-
-                        for (let x = 0; x < length; x += 40) { // Less dense lightning (15 -> 40)
-                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
-
-                            // Jagged movement
-                            const jitter = (Math.sin(x * 0.3 + flowTime * 5 + arcPhase) * 10
-                                + Math.cos(x * 1.1 + arcPhase) * 5) * expandFactor;
-
-                            // Bound within beam width roughly
-                            y = jitter * (beamWidth / 20);
-                            ctx.lineTo(x, y);
-                        }
-                        ctx.stroke();
-                    }
-                    ctx.shadowBlur = 0;
-
-                    ctx.restore();
                 } else if (g.type === 'CRACK') {
                     const alpha = g.life / g.maxLife;
                     ctx.save();
@@ -7005,25 +6789,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 if (p.isFiringFlamethrower) {
                     drawFlamethrower(ctx, p);
                 }
-
-                // ... (Rest of player rendering logic like circle body, etc. follows?)
-                // Actually, let's verify if `drawFlamethrower` should be UNDER or OVER the player body.
-                // Usually under the character body looks better (shooting from "hand" level, but body on top).
-                // Or over? Flamethrower is bright.
-                // Let's put it HERE (before player body rendering if this loop continues to render body).
-                // But wait, there is no "Players" loop visible here. 
-                // Ah, line 6729 is inside `state.drones.forEach`.
-                // I need to find `state.players.forEach`.
-                // It seems I am looking at DRONES loop end.
-                // I will target the `state.players.forEach` loop which should be nearby.
             });
-            // Wait, my view_file range 6700-6800 shows `state.drones.forEach` ending at 6730.
-            // Then `state.lightSpirits.forEach`.
-            // Then `state.particles.forEach`.
-            // WHERE IS `state.players.forEach`?
-            // It must be BEFORE or AFTER this block.
-            // I will search for `state.players.forEach`.
-
 
             // 光灵球守护神渲染
             state.lightSpirits.forEach(spirit => {
@@ -7199,9 +6965,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             });
 
             // [修改核心] 遍历所有玩家进行绘制
-            // 替换原有的 [state.player, state.enemy].forEach
-
-            // 排序渲染顺序：飞扑的猫猫球和跳跃的猴子需要渲染在最上层
             const sortedPlayers = [...state.players].sort((a, b) => {
                 // z-order: 0 = 地面, 1 = 空中
                 const getZOrder = (p: PlayerState) => {
@@ -7422,8 +7185,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     if (Math.floor(Date.now() / 100) % 2 === 0) ctx.globalAlpha = 0.5;
                 }
 
-                // Fallback Colors if Image fails OR Override for Status
-                // [Modified] Use unified status color system
                 const statusInfo = getStatusInfo(p);
 
                 if (statusInfo) {
@@ -7468,9 +7229,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                             ctx.translate((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3);
                         }
                     }
-
-                    // Draw Active Attack Visuals MOVED to post-render loop for layering correction
-
 
                     const animTime = performance.now() - p.wukongLastAttackTime;
                     const animDuration = 250;
@@ -8253,7 +8011,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
 
             // [High Priority Render Layer 2] Cat Scooper Smash (Giant Shovel)
-            // Rendered AFTER Wukong's staff to ensure it's also on top of everything
             state.groundEffects.forEach(g => {
                 if (g.type === 'SCOOPER_SMASH') {
                     // Shadow
@@ -8286,6 +8043,202 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.fillStyle = '#7f1d1d';
                     ctx.fillRect(-20, -30, 10, 60);
                     ctx.fillRect(10, -30, 10, 60);
+
+                    ctx.restore();
+                }
+            });
+
+            // [High Priority Render Layer 3] Avada Kedavra Beam (Death Curse)
+            state.groundEffects.forEach(g => {
+                if (g.type === 'AVADA_BEAM') {
+                    // [New] Dynamic Smoky Beam Rendering (Optimized for Performance)
+                    ctx.save();
+                    const lifeRatio = g.life / g.maxLife;
+                    const powerRatio = g.powerRatio || 0.5;
+                    const beamWidth = g.width || 40;
+                    const length = g.length || 2000;
+
+                    // Beam fades out over life
+                    const alpha = Math.min(1.0, lifeRatio * 2.0); // Stay opaque for first half, then fade
+
+                    ctx.translate(g.pos.x, g.pos.y);
+                    ctx.rotate(g.rotation || 0);
+
+                    // 1. Dark Smoky Outer Glow (Widens with power)
+                    ctx.globalAlpha = alpha * 0.4;
+                    const smokeWidth = beamWidth * 1.5;
+                    const time = Date.now() / 200;
+
+                    // Black/Green Smoke Gradient
+                    const smokeGrad = ctx.createLinearGradient(0, -smokeWidth, 0, smokeWidth);
+                    smokeGrad.addColorStop(0, 'rgba(0, 10, 0, 0)');
+                    smokeGrad.addColorStop(0.3, '#022c22'); // Darker "Swamp" Green
+                    smokeGrad.addColorStop(0.7, '#022c22');
+                    smokeGrad.addColorStop(1, 'rgba(0, 10, 0, 0)');
+                    ctx.fillStyle = smokeGrad;
+
+                    // Draw wavy smoke (Layer 1) - Optimized Step (40 -> 80)
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    const beamStartGradientLen = 200; // 200px transition zone like aiming
+
+                    for (let x = 0; x < length; x += 80) {
+                        // Expansion Factor from 0 to 1
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        const currentSmokeWidth = smokeWidth * expandFactor;
+
+                        // Chaos noise
+                        const noise = (Math.sin(x * 0.02 + time) * 15
+                            + Math.cos(x * 0.05 - time) * 10) * expandFactor;
+                        ctx.lineTo(x, -currentSmokeWidth / 2 + noise);
+                    }
+                    ctx.lineTo(length, 0);
+                    for (let x = length; x >= 0; x -= 80) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        const currentSmokeWidth = smokeWidth * expandFactor;
+
+                        const noise = (Math.sin(x * 0.02 + time + Math.PI) * 15
+                            + Math.cos(x * 0.05 - time + 1) * 10) * expandFactor;
+                        ctx.lineTo(x, currentSmokeWidth / 2 + noise);
+                    }
+                    ctx.fill();
+
+                    // NEW: Electric Smoke Layer (Lighter, Faster) - Optimized Step (30 -> 60)
+                    if (powerRatio > 0.3) {
+                        ctx.globalAlpha = alpha * 0.3;
+                        ctx.fillStyle = '#14532d'; // Green-900
+                        ctx.beginPath();
+                        ctx.moveTo(0, 0);
+                        const fastTime = Date.now() / 100;
+                        for (let x = 0; x < length; x += 60) {
+                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                            const w = beamWidth * 1.2 * expandFactor;
+                            const noise = (Math.sin(x * 0.05 + fastTime) * 20) * expandFactor;
+                            ctx.lineTo(x, -w / 2 + noise);
+                        }
+                        ctx.lineTo(length, 0);
+                        for (let x = length; x >= 0; x -= 60) {
+                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                            const w = beamWidth * 1.2 * expandFactor;
+                            const noise = (Math.cos(x * 0.05 - fastTime) * 20) * expandFactor;
+                            ctx.lineTo(x, w / 2 + noise);
+                        }
+                        ctx.fill();
+                    }
+
+
+                    // 2. Main Beam Core with "Flowing Energy" - Optimized Step (20 -> 50)
+                    ctx.globalAlpha = alpha * (0.6 + 0.4 * powerRatio);
+
+                    // Create a flow effect pattern
+                    const flowTime = Date.now() / 50; // Fast flow
+
+                    ctx.fillStyle = '#22c55e'; // Base Green
+
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+
+                    // Top Edge of Core
+                    for (let x = 0; x <= length; x += 50) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        // Flowing width modulation
+                        const flow = Math.sin(x * 0.05 - flowTime) * (5 + 10 * powerRatio);
+                        const w = (beamWidth / 2 + flow) * expandFactor;
+                        ctx.lineTo(x, -w);
+                    }
+                    // Bottom Edge of Core
+                    for (let x = length; x >= 0; x -= 50) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        // Offset flow phase for asymmetry
+                        const flow = Math.sin(x * 0.05 - flowTime + Math.PI) * (5 + 10 * powerRatio);
+                        const w = (beamWidth / 2 + flow) * expandFactor;
+                        ctx.lineTo(x, w);
+                    }
+                    ctx.fill();
+
+                    // Internal "Streamer" / Core Brightness (High Flow) - Optimized Step (50 -> 80)
+                    ctx.globalAlpha = alpha * 0.9;
+                    ctx.fillStyle = '#86efac'; // Bright core
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    for (let x = 0; x <= length; x += 80) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        // Tight, fast moving bright core
+                        const flow = Math.sin(x * 0.1 - flowTime * 1.5) * (beamWidth * 0.2);
+                        const w = (beamWidth * 0.3 + flow) * expandFactor;
+                        ctx.lineTo(x, -w);
+                    }
+                    for (let x = length; x >= 0; x -= 80) {
+                        const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+                        const flow = Math.sin(x * 0.1 - flowTime * 1.5 + Math.PI) * (beamWidth * 0.2);
+                        const w = (beamWidth * 0.3 + flow) * expandFactor;
+                        ctx.lineTo(x, w);
+                    }
+                    ctx.fill();
+
+                    // 3. "Poison Bubbles" and "Miasma" (Random internal chaos) - Optimized Density
+                    ctx.globalAlpha = alpha * 0.6;
+                    ctx.fillStyle = '#4ade80'; // Toxic bright green for bubbles
+
+                    // Step 15+rand(20) -> 30+rand(30)
+                    for (let x = 0; x < length; x += 30 + Math.random() * 30) {
+                        // Deterministic psuedo-random positions based on x and beam id (using pos.x as seed proxy)
+                        const bubbleSeed = (x * 13 + g.pos.x) % 100;
+
+                        // Bubbles rising/wobbling
+                        const bubbleY = Math.sin(x * 0.1 + flowTime * 2 + bubbleSeed) * beamWidth * 0.4;
+                        const bubbleSize = 2 + Math.sin(x * 0.7 + bubbleSeed) * 2 + powerRatio * 3; // 2-7px
+
+                        // Bubbles
+                        if (bubbleSeed > 30) { // 70% chance
+                            ctx.beginPath();
+                            ctx.arc(x, bubbleY, bubbleSize, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+
+                        // Miasma Splotches (Dark purple/black gas pockets)
+                        if (bubbleSeed < 40) {
+                            ctx.fillStyle = 'rgba(20, 0, 20, 0.5)'; // Dark purple haze
+                            const miasmaSize = 10 + Math.random() * 10;
+                            ctx.beginPath();
+                            ctx.arc(x + 10, -bubbleY, miasmaSize, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.fillStyle = '#4ade80'; // Reset for bubbles
+                        }
+                    }
+
+                    // 4. Electric Arcs - Optimized Step (15 -> 40)
+                    const baseArcs = 1; // Always visible
+                    const extraArcs = Math.floor(powerRatio * 2);
+                    const totalArcs = baseArcs + extraArcs;
+
+                    ctx.globalAlpha = alpha * 1.0; // Max Visibility
+                    ctx.strokeStyle = '#dcfce7'; // White-Green
+                    ctx.lineWidth = 1.5 + powerRatio * 2.5; // 1.5px to 4px
+                    ctx.shadowColor = '#dcfce7'; // Bright glow
+                    ctx.shadowBlur = 15;
+
+                    for (let i = 0; i < totalArcs; i++) {
+                        ctx.beginPath();
+                        let y = 0;
+                        ctx.moveTo(0, 0);
+                        // Offset each arc slightly in time/phase so they don't overlap perfectly
+                        const arcPhase = i * 123.45;
+
+                        for (let x = 0; x < length; x += 40) { // Less dense lightning (15 -> 40)
+                            const expandFactor = Math.min(1.0, x / beamStartGradientLen);
+
+                            // Jagged movement
+                            const jitter = (Math.sin(x * 0.3 + flowTime * 5 + arcPhase) * 10
+                                + Math.cos(x * 1.1 + arcPhase) * 5) * expandFactor;
+
+                            // Bound within beam width roughly
+                            y = jitter * (beamWidth / 20);
+                            ctx.lineTo(x, y);
+                        }
+                        ctx.stroke();
+                    }
+                    ctx.shadowBlur = 0;
 
                     ctx.restore();
                 }
@@ -8882,6 +8835,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     // UI rendering helper for skill icon
     const getSkillIcon = (type: CharacterType) => {
+        if (type === CharacterType.MAGIC && uiState.pMagicForm === 'BLACK') {
+            return <img src={MAGIC_SKILL_BLACK} alt="Avada Kedavra" className="w-full h-full object-cover" />;
+        }
         const skillSrc = CHARACTER_IMAGES[type]?.skill;
         if (skillSrc) {
             return <img src={skillSrc} alt={type} className="w-full h-full object-cover" />;
