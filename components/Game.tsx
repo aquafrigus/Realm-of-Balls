@@ -914,6 +914,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             lightSpiritTimer: 0,
             avadaCharging: false,
             avadaChargeTime: 0,
+            // 《阿瓦达啃大瓜》(黑): 蓄力贯穿光束
+            avadaMaxDamage: 3500,      // 最大伤害(需低血量+高MP) - 提升上限
+            avadaMpDrainRate: 60,      // 蓄力时MP消耗速度/秒 (降低消耗，延长瞄准时间)
             magicChargeTimer: 0,
             ccImmuneTimer: 0,
             apparitionPhase: 'NONE',
@@ -1131,10 +1134,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         let ccRes = 0;
 
         // 1. Base Stats (Passive)
-        const stats = CHAR_STATS[target.type] as any; // Type assertion since CharStats is implicit
-        if (stats.baseTenacity) {
-            kbRes += stats.baseTenacity.knockbackResistance || 0;
-            ccRes += stats.baseTenacity.ccResistance || 0;
+        // [Refined] Check for instance-specific tenacity (for future-proof summons)
+        if ((target as any).baseTenacity) {
+            kbRes += (target as any).baseTenacity.knockbackResistance || 0;
+            ccRes += (target as any).baseTenacity.ccResistance || 0;
+        } else if (target.type && CHAR_STATS[target.type]) {
+            const stats = CHAR_STATS[target.type] as any;
+            if (stats.baseTenacity) {
+                kbRes += stats.baseTenacity.knockbackResistance || 0;
+                ccRes += stats.baseTenacity.ccResistance || 0;
+            }
         }
 
         // 2. Charge State (Temporary)
@@ -1522,14 +1531,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // 如果既没有敌人也没有无人机，才直接返回
         if (!enemy && !closestDrone) return;
 
-        let target: any = enemy;
+        let target: any = null;
 
         // 如果没有找到敌方玩家但找到了无人机，直接锁定无人机
         if (!enemy && closestDrone) {
             target = closestDrone;
-        }
-
-        if (enemy) {
+        } else if (enemy) {
             // 2. 判断敌人是否在屏幕内 (Camera View)
             const cam = stateRef.current.camera;
             const viewW = window.innerWidth;
@@ -1549,9 +1556,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             } else {
                 if (closestDrone && minDroneDist < distToEnemy && !isEnemyOnScreen) {
                     target = closestDrone;
+                } else {
+                    target = enemy;
                 }
             }
         }
+
+        if (!target) return; // Should not happen if enemy or closestDrone exists
 
         // [距离限制逻辑]
         let spawnPos = { ...target.pos };
@@ -1970,7 +1981,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
     };
 
     // 大招技能
-    const handleMagicUltimate = (p: PlayerState) => {
+    const handleMagicUltimate = (p: PlayerState, dt: number) => {
         if (p.skillCooldown > 0) return;
 
         const stats = CHAR_STATS[CharacterType.MAGIC];
@@ -2052,12 +2063,16 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
             // Charging Logic (Per Frame)
             const drainRate = stats.avadaMpDrainRate; // 80 MP/s
-            // Estimate Real Delta Time (0.016s per frame)
-            const estimatedRealDt = 0.016;
 
+            // [Fix] Calculate Real Delta Time to ensure consistent charging speed
+            // regardless of Bullet Time or Frame Rate lags.
+            // dt passed in is already scaled by timeScale (e.g. 0.0016 in bullet time).
+            // We want real time (0.016), so we divide by timeScale.
+            const currentTimeScale = stateRef.current.timeScale || 1;
+            const realDt = (currentTimeScale > 0.001) ? dt / currentTimeScale : 0.016;
 
-            p.mp = Math.max(0, (p.mp || 0) - drainRate * estimatedRealDt);
-            p.avadaChargeTime = (p.avadaChargeTime || 0) + estimatedRealDt;
+            p.mp = Math.max(0, (p.mp || 0) - drainRate * realDt);
+            p.avadaChargeTime = (p.avadaChargeTime || 0) + realDt;
 
             // Force release if out of MP
             if (p.mp <= 0) {
@@ -2091,7 +2106,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // Damage Calculation
         const hpRatio = p.hp / p.maxHp;
-        const baseDamage = 50 + totalFuel * (2.5 - hpRatio) * 2.0;
+        const baseDamage = 50 + totalFuel * (2.5 - hpRatio) * 3.5; // 提升伤害系数 2.0 -> 3.5
         const damage = Math.min(baseDamage, stats.avadaMaxDamage);
 
         // ALWAYS Apply Cooldown (Prevent loop)
@@ -2103,7 +2118,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Visuals: Green Beam
         const dir = { x: Math.cos(p.aimAngle), y: Math.sin(p.aimAngle) };
         const wandLength = 32;
-        const startPos = Utils.add(p.pos, Utils.mult(dir, p.radius + wandLength));
+        const visualStartPos = Utils.add(p.pos, Utils.mult(dir, p.radius + wandLength));
+
+        // Raycast logic - Use center of player to avoid blind spot at very close range
+        const calcStartPos = p.pos;
 
         // Raycast
         const enemies = getEnemies(p);
@@ -2118,11 +2136,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Hit Logic
         enemies.forEach(enemy => {
             // Line-Circle Intersection
-            const toEnemy = Utils.sub(enemy.pos, startPos);
+            const toEnemy = Utils.sub(enemy.pos, calcStartPos);
             const proj = Utils.dot(toEnemy, dir);
             if (proj < 0) return;
 
-            const closest = Utils.add(startPos, Utils.mult(dir, proj));
+            const closest = Utils.add(calcStartPos, Utils.mult(dir, proj));
             const dist = Utils.dist(enemy.pos, closest);
 
             if (dist < enemy.radius + 20) {
@@ -2138,7 +2156,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // Beam Render Object (Animation)
         stateRef.current.groundEffects.push({
             id: Math.random().toString(),
-            pos: startPos,
+            pos: visualStartPos, // Use visual start pos
             radius: 20, // Used for start width
             life: 0.5,
             maxLife: 0.5,
@@ -3581,7 +3599,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // [解控技能早期处理] 白魔法球《呼神护卫》可在被控制时释放
         if (p.type === CharacterType.MAGIC && p.magicForm === 'WHITE' && keysRef.current['Space']) {
-            handleMagicUltimate(p);
+            handleMagicUltimate(p, dt);
         }
 
         // [Priority System] Fear > Taunt > Charm
@@ -3934,7 +3952,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
 
             if (keysRef.current['Space']) {
-                handleMagicUltimate(p);
+                handleMagicUltimate(p, dt);
             } else {
                 // [Release Check] Avada Kedavra
                 if (p.avadaCharging) {
@@ -3953,6 +3971,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         // AI Status Checks
         if (ai.stunTimer > 0 || ai.sleepTimer > 0 || (ai.petrifyTimer || 0) > 0) {
             ai.vel = Utils.mult(ai.vel, 0.8);
+            // [Fix] Ensure sustained abilities are stopped when controlled
+            ai.isFiringFlamethrower = false;
             return;
         }
 
@@ -3966,6 +3986,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 ai.vel = Utils.add(ai.vel, Utils.mult(runDir, PHYSICS.ACCELERATION_SPEED * fearSpeed * dt * 60));
                 ai.angle = Math.atan2(runDir.y, runDir.x);
             }
+            // [Fix] Ensure sustained abilities are stopped when feared
+            ai.isFiringFlamethrower = false;
             return;
         }
 
@@ -4013,6 +4035,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // Fallthrough to character specific blocks but skip skills.
                 ai.aiSkipSkills = true;
             } else {
+                // [Fix] Charmed AI should not continue to normal logic
+                // Reset sustained abilities before returning
+                ai.isFiringFlamethrower = false;
                 return;
             }
         } else {
@@ -4701,7 +4726,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         (ai.hp < ai.maxHp * 0.3 && Math.random() < 0.1); // 残血时更积极
 
                     if (shouldUlt) {
-                        handleMagicUltimate(ai);
+                        handleMagicUltimate(ai, dt);
                     }
                 }
             }
@@ -4778,107 +4803,31 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     const fireFlamethrower = (p: PlayerState, dt: number) => {
         if (p.disarmTimer > 0) return;
+
+        // Sound logic (always runs based on real time)
         const now = performance.now();
         if (now - lastPyroSoundTimeRef.current > 120) {
             Sound.playShot('PYRO');
             lastPyroSoundTimeRef.current = now;
         }
 
+        // Particle logic REMOVED in favor of procedural rendering (drawFlamethrower)
+        // This solves the performance bottleneck fundamentally.
+        // Damage is handled by checkCollisions or similar logic elsewhere, 
+        // using the geometric cone properties below.
+
+        // [Note] Damage logic is cone-based and separate from visuals.
+        // See surrounding code for target iteration if any.
+        // (Actually, checking the file content again, the damage logic WAS inside here below particle spawn)
+        // Correct! The loop below "Hit Logic" MUST remain. 
+        // So I only delete the "stateRef.current.particles.push" blocks.
+
         const range = p.currentWeaponRange || CHAR_STATS[CharacterType.PYRO].flamethrowerRange;
         const cone = p.currentWeaponAngle || CHAR_STATS[CharacterType.PYRO].flamethrowerAngle;
+        // const tip = Utils.add(p.pos, Utils.mult({ x: Math.cos(p.aimAngle), y: Math.sin(p.aimAngle) }, p.radius + 5));
 
-        const tip = Utils.add(p.pos, Utils.mult({ x: Math.cos(p.aimAngle), y: Math.sin(p.aimAngle) }, p.radius + 5));
-
-        // 1. 核心喷射流 (Core): 极快、亮白/亮黄、小体积 - 增强
-        for (let i = 0; i < 4; i++) {  // 增加数量
-            const angleOffset = (Math.random() - 0.5) * cone * 0.5;
-            const finalAngle = p.aimAngle + angleOffset;
-            const speed = 16 + Math.random() * 6; // 极快 (16~22)
-            const baseLife = (range / (speed * 60)) * 0.8;
-
-            stateRef.current.particles.push({
-                id: Math.random().toString(),
-                pos: { ...tip },
-                vel: { x: Math.cos(finalAngle) * speed, y: Math.sin(finalAngle) * speed },
-                life: baseLife,
-                maxLife: baseLife,
-                color: Math.random() > 0.5 ? '#ffffff' : '#fef3c7', // 白/亮米色
-                size: 3 + Math.random() * 2
-            });
-        }
-
-        // 2. 主体烈焰 (Body): 正常速度、橙红黄渐变、中体积 - 大幅增强
-        for (let i = 0; i < 8; i++) {  // 增加数量
-            const angleOffset = (Math.random() - 0.5) * 2 * cone;
-            const finalAngle = p.aimAngle + angleOffset;
-            const speed = 12 + Math.random() * 4;
-            const baseLife = range / (speed * 60);
-
-            // 丰富的颜色渐变
-            const colors = ['#fef08a', '#fde047', '#facc15', '#f59e0b', '#f97316', '#ef4444'];
-            const color = colors[Math.floor(Math.random() * colors.length)];
-
-            stateRef.current.particles.push({
-                id: Math.random().toString(),
-                pos: { ...tip },
-                vel: { x: Math.cos(finalAngle) * speed, y: Math.sin(finalAngle) * speed },
-                life: baseLife * (0.9 + Math.random() * 0.3),
-                maxLife: baseLife,
-                color: color,
-                size: 3 + Math.random() * 4
-            });
-        }
-
-        // 3. 边缘烟雾/余烬 (Smoke): 稍慢、深红/灰、大体积
-        for (let i = 0; i < 3; i++) {  // 略增加
-            const angleOffset = (Math.random() - 0.5) * 2.2 * cone;
-            const finalAngle = p.aimAngle + angleOffset;
-            const speed = 8 + Math.random() * 4;
-            const baseLife = range / (speed * 60);
-
-            stateRef.current.particles.push({
-                id: Math.random().toString(),
-                pos: { ...tip },
-                vel: { x: Math.cos(finalAngle) * speed, y: Math.sin(finalAngle) * speed },
-                life: baseLife,
-                maxLife: baseLife,
-                color: 'rgba(185, 28, 28, 0.5)',
-                size: 5 + Math.random() * 4,
-                drag: 0.95
-            });
-        }
-
-        // 4. [新增] 火星飞溅 (Sparks): 快速、小颗粒、随机散射
-        for (let i = 0; i < 3; i++) {
-            const angleOffset = (Math.random() - 0.5) * 2.5 * cone;
-            const finalAngle = p.aimAngle + angleOffset;
-            const speed = 18 + Math.random() * 8;
-            const baseLife = (range / (speed * 60)) * 0.6;
-
-            stateRef.current.particles.push({
-                id: Math.random().toString(),
-                pos: { ...tip },
-                vel: { x: Math.cos(finalAngle) * speed, y: Math.sin(finalAngle) * speed },
-                life: baseLife,
-                maxLife: baseLife,
-                color: Math.random() > 0.5 ? '#fbbf24' : '#fde68a',
-                size: 1.5 + Math.random() * 1.5
-            });
-        }
-
-        // 5. [新增] 热浪/辉光 (Glow): 大而透明、扩散慢
-        if (Math.random() < 0.3) {  // 30%概率生成
-            stateRef.current.particles.push({
-                id: Math.random().toString(),
-                pos: { ...tip },
-                vel: { x: Math.cos(p.aimAngle) * 6, y: Math.sin(p.aimAngle) * 6 },
-                life: 0.4,
-                maxLife: 0.4,
-                color: 'rgba(251, 191, 36, 0.2)',
-                size: 8 + Math.random() * 6,
-                drag: 0.9
-            });
-        }
+        // [Removed] Particle Spawning Blocks (Core, Body, Smoke, Sparks, Glow)
+        // Procedural rendering in drawFlamethrower() replaces this.
 
         // [友军伤害] 使用 getAllAttackTargets 获取所有可攻击目标（包括友军）
         const targets = getAllAttackTargets(p);
@@ -4896,7 +4845,10 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     if ('isSummon' in e) {
                         e.hp -= 350 * dt;
                         if (e.hp <= 0) killEntity(e, p.id); // [新增] 召唤物死亡处理
-                        if (Math.random() < 0.2) spawnParticles(e.pos, 1, '#ef4444', 2, 0.5);
+                        // Visual feedback for hit can remain as minimal particles? 
+                        // Or remove to strict "no particle"? 
+                        // Let's keep minimal hit particles for feedback, but extremely sparse.
+                        if (Math.random() < 0.1) spawnParticles(e.pos, 1, '#ef4444', 2, 0.5);
                     } else {
                         // 使用统一的免疫检查：火焰免疫检测
                         const fireImmunity = checkStatusImmunity(e, 'burn');
@@ -4918,7 +4870,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         const baseDmg = 95;
                         takeDamage(e, baseDmg * dt, CharacterType.PYRO, DamageType.FIRE);
                     }
-                    if (Math.random() < 0.15) spawnParticles(e.pos, 1, '#ff4400', 1, 0.5);
+                    // Minimal hit feedback
+                    if (Math.random() < 0.05) spawnParticles(e.pos, 1, '#ff4400', 1, 0.5);
                 }
             }
         });
@@ -6225,6 +6178,258 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
     // --- Rendering ---
 
+    // [New] Procedural Flamethrower Rendering (Refined)
+    const drawFlamethrower = (ctx: CanvasRenderingContext2D, p: PlayerState) => {
+        const stats = CHAR_STATS[CharacterType.PYRO];
+        const range = p.currentWeaponRange || stats.flamethrowerRange;
+        // Cone half-angle (radians). Note: stats usually define the full arc or half? 
+        // Logic says 'cone' in fireFlamethrower is used as abs(diff) < cone. So 'cone' is the Half-Angle.
+        // If angleWidth is very large (close range mouse), we must respect it.
+        const halfAngle = p.currentWeaponAngle || stats.flamethrowerAngle;
+        const tipRadius = p.radius + 5;
+
+        ctx.save();
+        ctx.translate(p.pos.x, p.pos.y);
+        ctx.rotate(p.aimAngle);
+
+        const time = Date.now() / 150;
+
+        // Draw Tip Offset
+        ctx.translate(tipRadius, 0);
+
+        // 1. Outer Gloom/Heat (Wide, Darker)
+        const outerGrad = ctx.createLinearGradient(0, 0, range, 0);
+        outerGrad.addColorStop(0, 'rgba(255, 50, 0, 0.1)');
+        outerGrad.addColorStop(0.5, 'rgba(180, 20, 20, 0.25)'); // Dark Red
+        outerGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+        ctx.fillStyle = outerGrad;
+        ctx.beginPath();
+        // Wider subtle glow
+        drawWavySector(ctx, range, halfAngle * 1.3, 20, time * 0.5, 5, 2);
+        ctx.fill();
+
+
+        // 2. Main Body (Rich Orange/Red)
+        const mainGrad = ctx.createLinearGradient(0, 0, range * 0.95, 0);
+        mainGrad.addColorStop(0, 'rgba(255, 255, 0, 0.9)');
+        mainGrad.addColorStop(0.2, 'rgba(255, 160, 0, 0.85)');
+        mainGrad.addColorStop(0.6, 'rgba(255, 60, 0, 0.7)');
+        mainGrad.addColorStop(1, 'rgba(255, 0, 0, 0)');
+
+        ctx.fillStyle = mainGrad;
+        ctx.beginPath();
+        // Main visible body, rich detail
+        drawWavySector(ctx, range * 0.95, halfAngle, 10, time, 15, 3);
+        ctx.fill();
+
+        // 3. Inner Core (Bright stream)
+        const coreGrad = ctx.createLinearGradient(0, 0, range * 0.7, 0);
+        coreGrad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+        coreGrad.addColorStop(0.4, 'rgba(255, 255, 100, 0.6)');
+        coreGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+        ctx.fillStyle = coreGrad;
+        ctx.beginPath();
+        // Narrower core, very fast
+        drawWavySector(ctx, range * 0.7, halfAngle * 0.6, 10, time * 2.0, 8, 2);
+        ctx.fill();
+
+        // 4. Procedural Sparks (Stateless)
+        // High intensity, fast moving, realistic embers
+        // [Dynamic] Scale spark count based on flame width (halfAngle)
+        // Narrow flame (small angle) = fewer sparks, Wide flame = more sparks
+        const minSparks = 1; // Further reduced for very narrow flames
+        const maxSparks = 12;
+        // Assume halfAngle ranges from ~0.1 (narrow) to ~1.5 (wide) radians
+        // Map this to spark count
+        const angleNormalized = Math.min(1, Math.max(0, (halfAngle - 0.1) / 1.4));
+        const sparkCount = Math.round(minSparks + angleNormalized * (maxSparks - minSparks));
+
+        // Golden Ratio for even angular distribution regardless of count
+        const goldenRatio = 0.61803398875;
+
+        for (let i = 0; i < sparkCount; i++) {
+            const speed = 350; // px per second
+            const offset = i * 12345;
+            const nowSec = Date.now() / 1000;
+            const t = nowSec * speed + offset;
+
+            const dist = t % range;
+
+            // Fade out
+            const alpha = 1 - Math.pow(dist / range, 2);
+            if (alpha < 0) continue;
+
+            // [Refined] Angular Distribution
+            // Use Golden Angle to ensure perfect uniform coverage spread across the cone
+            // (i * goldenRatio) % 1 gives a number 0..1 that avoids clustering
+            const normalizedSpread = ((i * goldenRatio) % 1 - 0.5) * 2; // -1 to 1
+
+            // Time-based Meander (Simulate turbulence)
+            // Function of time and distance
+            const meanderFreq = 4.0;
+            const meanderAmp = 0.15; // Radians deviation magnitude
+            const turbulence = Math.sin(nowSec * meanderFreq + i * 10) * meanderAmp * (dist / range);
+
+            // Combine base spread position with turbulence
+            const angle = normalizedSpread * halfAngle * 0.8 + turbulence;
+
+            const sx = dist * Math.cos(angle);
+            const sy = dist * Math.sin(angle);
+
+            // Variable Size (5px - 10px) - Increased from 3-6px
+            // Use a hash of index for consistent size per spark
+            const sizeHash = Math.abs(Math.sin(i * 999));
+            const baseSize = 5 + sizeHash * 5;
+
+            ctx.globalAlpha = alpha;
+
+            // Draw realistic ember shape with tail
+            // 1. Tail (motion blur effect) - Enhanced length and visibility
+            const tailLength = 15 + baseSize * 1.5; // Longer tail
+            const tailGrad = ctx.createLinearGradient(
+                sx - tailLength * Math.cos(angle),
+                sy - tailLength * Math.sin(angle),
+                sx,
+                sy
+            );
+            tailGrad.addColorStop(0, 'rgba(255, 100, 0, 0)');
+            tailGrad.addColorStop(0.3, `rgba(255, 150, 50, ${alpha * 0.3})`); // More visible mid-section
+            tailGrad.addColorStop(1, `rgba(254, 240, 138, ${alpha * 0.7})`); // Brighter end
+
+            ctx.fillStyle = tailGrad;
+            ctx.beginPath();
+            ctx.ellipse(
+                sx - (tailLength / 2) * Math.cos(angle),
+                sy - (tailLength / 2) * Math.sin(angle),
+                tailLength / 2,
+                baseSize / 1.5, // Slightly wider tail
+                angle,
+                0,
+                Math.PI * 2
+            );
+            ctx.fill();
+
+            // 2. Core (bright circular ember) - Enhanced with outer glow
+            // Outer glow layer
+            const glowGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, baseSize * 1.5);
+            glowGrad.addColorStop(0, `rgba(255, 200, 100, ${alpha * 0.6})`);
+            glowGrad.addColorStop(0.5, `rgba(255, 150, 50, ${alpha * 0.3})`);
+            glowGrad.addColorStop(1, `rgba(255, 100, 0, 0)`);
+
+            ctx.fillStyle = glowGrad;
+            ctx.beginPath();
+            ctx.arc(sx, sy, baseSize * 1.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Inner core
+            const coreGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, baseSize);
+            coreGrad.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
+            coreGrad.addColorStop(0.3, `rgba(255, 240, 180, ${alpha * 0.95})`);
+            coreGrad.addColorStop(0.6, `rgba(254, 240, 138, ${alpha * 0.8})`);
+            coreGrad.addColorStop(1, `rgba(255, 100, 0, 0)`);
+
+            ctx.fillStyle = coreGrad;
+            ctx.beginPath();
+            ctx.arc(sx, sy, baseSize, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.globalAlpha = 1.0; // Reset alpha
+
+        ctx.restore();
+    };
+
+    // Helper: Draw a "Wavy Sector" using Polar stepping to prevent width explosion
+    // radius: max distance
+    // halfAngle: radians from center axis
+    // step: radial step size
+    // time: animation input
+    // amp: noise amplitude
+    // octaves: detail level
+    const drawWavySector = (
+        ctx: CanvasRenderingContext2D,
+        radius: number,
+        halfAngle: number,
+        step: number,
+        time: number,
+        amp: number,
+        octaves: number = 1
+    ) => {
+        ctx.moveTo(0, 0);
+
+        // 1. Top Edge (angle = -halfAngle)
+        // We step outwards along the radius
+        for (let r = 0; r <= radius; r += step) {
+            // Base position on the ray
+            const bx = r * Math.cos(-halfAngle);
+            const by = r * Math.sin(-halfAngle);
+
+            // Perpendicular Noise Vector
+            // Vector perpendicular to angle -halfAngle is angle (-halfAngle + PI/2)
+            const pAngle = -halfAngle + Math.PI / 2;
+            const px = Math.cos(pAngle);
+            const py = Math.sin(pAngle);
+
+            // Multi-octave noise
+            let noise = 0;
+            for (let o = 0; o < octaves; o++) {
+                const freq = 0.05 * Math.pow(2, o);
+                const a = amp / Math.pow(1.5, o); // amplitude decay
+                const speed = time * Math.pow(1.5, o);
+                noise += Math.sin(r * freq - speed) * a;
+            }
+
+            // Scale noise by radius ratio (less noise at source)
+            const ratio = Math.pow(r / radius, 0.5);
+            noise *= ratio;
+
+            ctx.lineTo(bx + px * noise, by + py * noise);
+        }
+
+        // 2. Outer Arc (Connecting Top to Bottom)
+        // Approximate arc with segments
+        const arcSteps = 8;
+        for (let i = 0; i <= arcSteps; i++) {
+            const t = i / arcSteps; // 0 to 1
+            const ang = -halfAngle + t * (2 * halfAngle);
+
+            // Add some noise to the radius of the arc too?
+            let rNoise = Math.sin(ang * 5 + time) * amp * 0.5;
+            const rCurrent = radius + rNoise;
+
+            ctx.lineTo(rCurrent * Math.cos(ang), rCurrent * Math.sin(ang));
+        }
+
+        // 3. Bottom Edge (angle = +halfAngle) - Coming back to center
+        // We iterate backwards from r=radius down to 0
+        for (let r = radius; r >= 0; r -= step) {
+            const bx = r * Math.cos(halfAngle);
+            const by = r * Math.sin(halfAngle);
+
+            // Perpendicular to angle +halfAngle is (+halfAngle - PI/2)
+            const pAngle = halfAngle - Math.PI / 2;
+            const px = Math.cos(pAngle);
+            const py = Math.sin(pAngle);
+
+            let noise = 0;
+            for (let o = 0; o < octaves; o++) {
+                // Offset phase slightly for bottom edge so it doesn't mirror exactly
+                const freq = 0.05 * Math.pow(2, o);
+                const a = amp / Math.pow(1.5, o);
+                const speed = time * Math.pow(1.5, o);
+                noise += Math.sin(r * freq - speed + Math.PI) * a;
+            }
+            const ratio = Math.pow(r / radius, 0.5);
+            noise *= ratio;
+
+            ctx.lineTo(bx + px * noise, by + py * noise);
+        }
+
+        ctx.closePath();
+    };
+
     const draw = (ctx: CanvasRenderingContext2D) => {
         const state = stateRef.current;
         const { width, height } = ctx.canvas;
@@ -6237,10 +6442,15 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         ctx.fillRect(0, 0, width, height);
 
         ctx.save();
-        // [Global Filter]
-        if (state.globalFilter) {
-            ctx.filter = state.globalFilter;
+        // [Optimization] Apply Global Filter via CSS to avoid Canvas 2D render pipeline stall
+        // This fixes the lag spike when entering Avada Kedavra (Bullet Time)
+        const desiredFilter = state.globalFilter || 'none';
+        if (ctx.canvas.style.filter !== desiredFilter) {
+            ctx.canvas.style.filter = desiredFilter;
         }
+
+        // ctx.filter removed - handled by CSS
+
 
         try {
             ctx.translate(-state.camera.x, -state.camera.y);
@@ -6425,7 +6635,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         ctx.fill();
                     }
                 } else if (g.type === 'AVADA_BEAM') {
-                    // [New] Dynamic Smoky Beam Rendering
+                    // [New] Dynamic Smoky Beam Rendering (Optimized for Performance)
                     ctx.save();
                     const lifeRatio = g.life / g.maxLife;
                     const powerRatio = g.powerRatio || 0.5;
@@ -6441,7 +6651,6 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     // 1. Dark Smoky Outer Glow (Widens with power)
                     ctx.globalAlpha = alpha * 0.4;
                     const smokeWidth = beamWidth * 1.5;
-                    // Create multiple chaotic sine waves for smoke edges
                     const time = Date.now() / 200;
 
                     // Black/Green Smoke Gradient
@@ -6452,12 +6661,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     smokeGrad.addColorStop(1, 'rgba(0, 10, 0, 0)');
                     ctx.fillStyle = smokeGrad;
 
-                    // Draw wavy smoke (Layer 1)
+                    // Draw wavy smoke (Layer 1) - Optimized Step (40 -> 80)
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
                     const beamStartGradientLen = 200; // 200px transition zone like aiming
 
-                    for (let x = 0; x < length; x += 40) {
+                    for (let x = 0; x < length; x += 80) {
                         // Expansion Factor from 0 to 1
                         const expandFactor = Math.min(1.0, x / beamStartGradientLen);
                         const currentSmokeWidth = smokeWidth * expandFactor;
@@ -6468,7 +6677,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         ctx.lineTo(x, -currentSmokeWidth / 2 + noise);
                     }
                     ctx.lineTo(length, 0);
-                    for (let x = length; x >= 0; x -= 40) {
+                    for (let x = length; x >= 0; x -= 80) {
                         const expandFactor = Math.min(1.0, x / beamStartGradientLen);
                         const currentSmokeWidth = smokeWidth * expandFactor;
 
@@ -6478,21 +6687,21 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
                     ctx.fill();
 
-                    // NEW: Electric Smoke Layer (Lighter, Faster)
+                    // NEW: Electric Smoke Layer (Lighter, Faster) - Optimized Step (30 -> 60)
                     if (powerRatio > 0.3) {
                         ctx.globalAlpha = alpha * 0.3;
                         ctx.fillStyle = '#14532d'; // Green-900
                         ctx.beginPath();
                         ctx.moveTo(0, 0);
                         const fastTime = Date.now() / 100;
-                        for (let x = 0; x < length; x += 30) {
+                        for (let x = 0; x < length; x += 60) {
                             const expandFactor = Math.min(1.0, x / beamStartGradientLen);
                             const w = beamWidth * 1.2 * expandFactor;
                             const noise = (Math.sin(x * 0.05 + fastTime) * 20) * expandFactor;
                             ctx.lineTo(x, -w / 2 + noise);
                         }
                         ctx.lineTo(length, 0);
-                        for (let x = length; x >= 0; x -= 30) {
+                        for (let x = length; x >= 0; x -= 60) {
                             const expandFactor = Math.min(1.0, x / beamStartGradientLen);
                             const w = beamWidth * 1.2 * expandFactor;
                             const noise = (Math.cos(x * 0.05 - fastTime) * 20) * expandFactor;
@@ -6502,7 +6711,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
 
 
-                    // 2. Main Beam Core with "Flowing Energy"
+                    // 2. Main Beam Core with "Flowing Energy" - Optimized Step (20 -> 50)
                     ctx.globalAlpha = alpha * (0.6 + 0.4 * powerRatio);
 
                     // Create a flow effect pattern
@@ -6514,7 +6723,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.moveTo(0, 0);
 
                     // Top Edge of Core
-                    for (let x = 0; x <= length; x += 20) {
+                    for (let x = 0; x <= length; x += 50) {
                         const expandFactor = Math.min(1.0, x / beamStartGradientLen);
                         // Flowing width modulation
                         const flow = Math.sin(x * 0.05 - flowTime) * (5 + 10 * powerRatio);
@@ -6522,7 +6731,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         ctx.lineTo(x, -w);
                     }
                     // Bottom Edge of Core
-                    for (let x = length; x >= 0; x -= 20) {
+                    for (let x = length; x >= 0; x -= 50) {
                         const expandFactor = Math.min(1.0, x / beamStartGradientLen);
                         // Offset flow phase for asymmetry
                         const flow = Math.sin(x * 0.05 - flowTime + Math.PI) * (5 + 10 * powerRatio);
@@ -6531,19 +6740,19 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
                     ctx.fill();
 
-                    // Internal "Streamer" / Core Brightness (High Flow)
+                    // Internal "Streamer" / Core Brightness (High Flow) - Optimized Step (50 -> 80)
                     ctx.globalAlpha = alpha * 0.9;
                     ctx.fillStyle = '#86efac'; // Bright core
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
-                    for (let x = 0; x <= length; x += 50) {
+                    for (let x = 0; x <= length; x += 80) {
                         const expandFactor = Math.min(1.0, x / beamStartGradientLen);
                         // Tight, fast moving bright core
                         const flow = Math.sin(x * 0.1 - flowTime * 1.5) * (beamWidth * 0.2);
                         const w = (beamWidth * 0.3 + flow) * expandFactor;
                         ctx.lineTo(x, -w);
                     }
-                    for (let x = length; x >= 0; x -= 50) {
+                    for (let x = length; x >= 0; x -= 80) {
                         const expandFactor = Math.min(1.0, x / beamStartGradientLen);
                         const flow = Math.sin(x * 0.1 - flowTime * 1.5 + Math.PI) * (beamWidth * 0.2);
                         const w = (beamWidth * 0.3 + flow) * expandFactor;
@@ -6551,11 +6760,12 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     }
                     ctx.fill();
 
-                    // 3. "Poison Bubbles" and "Miasma" (Random internal chaos)
+                    // 3. "Poison Bubbles" and "Miasma" (Random internal chaos) - Optimized Density
                     ctx.globalAlpha = alpha * 0.6;
                     ctx.fillStyle = '#4ade80'; // Toxic bright green for bubbles
 
-                    for (let x = 0; x < length; x += 15 + Math.random() * 20) {
+                    // Step 15+rand(20) -> 30+rand(30)
+                    for (let x = 0; x < length; x += 30 + Math.random() * 30) {
                         // Deterministic psuedo-random positions based on x and beam id (using pos.x as seed proxy)
                         const bubbleSeed = (x * 13 + g.pos.x) % 100;
 
@@ -6581,7 +6791,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         }
                     }
 
-                    // 4. Electric Arcs
+                    // 4. Electric Arcs - Optimized Step (15 -> 40)
                     const baseArcs = 1; // Always visible
                     const extraArcs = Math.floor(powerRatio * 2);
                     const totalArcs = baseArcs + extraArcs;
@@ -6599,7 +6809,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                         // Offset each arc slightly in time/phase so they don't overlap perfectly
                         const arcPhase = i * 123.45;
 
-                        for (let x = 0; x < length; x += 15) { // Denser lightning points
+                        for (let x = 0; x < length; x += 40) { // Less dense lightning (15 -> 40)
                             const expandFactor = Math.min(1.0, x / beamStartGradientLen);
 
                             // Jagged movement
@@ -6778,9 +6988,8 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.stroke();
                 });
 
-                // 3. Mini HP Bar
-                const hpPct = d.hp / d.maxHp;
-                if (hpPct < 1) {
+                if (d.hp < d.maxHp) {
+                    const hpPct = d.hp / d.maxHp;
                     ctx.fillStyle = 'red';
                     ctx.fillRect(-10, -15, 20, 3);
                     ctx.fillStyle = '#34d399';
@@ -6788,6 +6997,33 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 }
                 ctx.restore();
             });
+
+            // Players
+            state.players.forEach(p => {
+                // ... (Existing player rendering)
+                // [Optimization] Procedural Flamethrower
+                if (p.isFiringFlamethrower) {
+                    drawFlamethrower(ctx, p);
+                }
+
+                // ... (Rest of player rendering logic like circle body, etc. follows?)
+                // Actually, let's verify if `drawFlamethrower` should be UNDER or OVER the player body.
+                // Usually under the character body looks better (shooting from "hand" level, but body on top).
+                // Or over? Flamethrower is bright.
+                // Let's put it HERE (before player body rendering if this loop continues to render body).
+                // But wait, there is no "Players" loop visible here. 
+                // Ah, line 6729 is inside `state.drones.forEach`.
+                // I need to find `state.players.forEach`.
+                // It seems I am looking at DRONES loop end.
+                // I will target the `state.players.forEach` loop which should be nearby.
+            });
+            // Wait, my view_file range 6700-6800 shows `state.drones.forEach` ending at 6730.
+            // Then `state.lightSpirits.forEach`.
+            // Then `state.particles.forEach`.
+            // WHERE IS `state.players.forEach`?
+            // It must be BEFORE or AFTER this block.
+            // I will search for `state.players.forEach`.
+
 
             // 光灵球守护神渲染
             state.lightSpirits.forEach(spirit => {
@@ -6829,7 +7065,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 ctx.restore();
             });
 
-            // Particles
+            const particleTime = Date.now() / 100;
             state.particles.forEach(p => {
                 const alpha = Math.max(0, Math.min(1, p.life / (p.maxLife || 1)));
                 ctx.globalAlpha = alpha;
@@ -6839,8 +7075,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     ctx.translate(p.pos.x, p.pos.y);
                     ctx.rotate(p.angle || 0);
 
-                    // Add a glint effect based on time/rotation
-                    const glint = Math.sin(Date.now() / 100 + (parseInt(p.id) || 0)) > 0.8;
+                    const glint = Math.sin(particleTime + p.pos.x * 0.1) > 0.8;
                     ctx.fillStyle = glint ? '#ffffff' : p.color;
 
                     ctx.beginPath();

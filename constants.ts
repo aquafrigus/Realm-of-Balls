@@ -262,8 +262,8 @@ export const CHAR_STATS = {
     lightSpiritChargeCooldown: 0.4,  // 每次冲撞后的CD
     lightSpiritReturnSpeed: 20,      // 返回速度
     // 《阿瓦达啃大瓜》(黑): 蓄力贯穿光束
-    avadaMaxDamage: 2500,      // 最大伤害(需低血量+高MP)
-    avadaMpDrainRate: 60,      // 蓄力时MP消耗速度/秒 (降低消耗，延长瞄准时间)
+    avadaMaxDamage: 3500,      // 最大伤害(需低血量+高MP) - 提升上限
+    avadaMpDrainRate: 90,      // 蓄力时MP消耗速度/秒 (降低消耗，延长瞄准时间)
   }
 };
 

@@ -50,19 +50,34 @@ class SoundManager {
         osc.stop(t + duration);
     }
 
+    private noiseBuffer: AudioBuffer | null = null;
+
+    private getNoiseBuffer(): AudioBuffer | null {
+        if (!this.ctx) return null;
+        if (!this.noiseBuffer) {
+            // Create a 2-second reusable white noise buffer (usually enough for short SFX)
+            const bufferSize = this.ctx.sampleRate * 2.0;
+            const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) {
+                data[i] = Math.random() * 2 - 1;
+            }
+            this.noiseBuffer = buffer;
+        }
+        return this.noiseBuffer;
+    }
+
     private createNoise(duration: number, vol = 1, filterFreq?: number, filterType: BiquadFilterType = 'lowpass') {
         if (!this.ctx || !this.masterGain) return;
-        const t = this.ctx.currentTime;
 
-        const bufferSize = this.ctx.sampleRate * duration;
-        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-        const data = buffer.getChannelData(0);
-        for (let i = 0; i < bufferSize; i++) {
-            data[i] = Math.random() * 2 - 1;
-        }
+        const buffer = this.getNoiseBuffer();
+        if (!buffer) return;
+
+        const t = this.ctx.currentTime;
 
         const noise = this.ctx.createBufferSource();
         noise.buffer = buffer;
+        noise.loop = true; // Loop if duration exceeds buffer length
 
         const gain = this.ctx.createGain();
         gain.gain.setValueAtTime(vol, t);
@@ -79,7 +94,11 @@ class SoundManager {
         }
 
         gain.connect(this.masterGain);
-        noise.start();
+
+        // Randomize start position to prevent "phasing" artifacts if multiple play at once
+        const randomOffset = Math.random() * buffer.duration;
+        noise.start(t, randomOffset);
+        noise.stop(t + duration);
     }
 
     playShot(type: 'PYRO' | 'ARTILLERY' | 'LMG' | 'SWING' | 'SCRATCH' | 'MAGIC') {
