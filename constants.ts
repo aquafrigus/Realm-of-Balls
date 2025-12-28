@@ -220,8 +220,8 @@ export const CHAR_STATS = {
     mpRegen: 20,        // MP/秒，匀速恢复
 
     // Left Click - Curse (普攻咒语)
-    curseManaCost: 10,   // 初始消耗 (0.5s CD -> 10MP/s vs 20MP/s Regen)
-    curseManaMaxCost: 60, // 连续使用最大消耗 (90MP/s Drain)
+    curseManaCost: 18,   // 初始消耗 - 提高以增加点射成本
+    curseManaMaxCost: 75, // 连续使用最大消耗
     curseRampUpTime: 2, // 达到最大消耗所需时间 (秒) - 约5发攻击
     curseCooldown: 400,  // 极快射速
     curseRange: 450,    // 最大飞行距离

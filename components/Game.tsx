@@ -4664,8 +4664,9 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             }
         }
         else if (ai.type === CharacterType.MAGIC) {
-            // 魔法球 AI 逻辑
+            // 魔法球 AI 逻辑 - [统筹规划版]
             const stats = CHAR_STATS[CharacterType.MAGIC];
+            const mpRatio = (ai.mp || 0) / stats.maxMp;
 
             // 瞄准
             if (target && (ai.aimLockTimer || 0) <= 0) {
@@ -4674,39 +4675,83 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             ai.angle = ai.aimAngle;
 
             if (target) {
-                // 移动策略：保持中距离
-                const optimalRange = 250 + (ai.aiPreferredDistOffset || 0);
+                // 移动策略：保持在射程边缘（风筝战术）
+                // curseRange = 450，保持在 380 左右可以安全控制敌人
+                const optimalRange = 380 + (ai.aiPreferredDistOffset || 0);
                 if (!evasionDir) {
-                    if (distToTarget < optimalRange - 50) {
-                        // too close
+                    if (distToTarget < optimalRange - 80) {
+                        // 敌人太近：后退拉开距离（被近战贴身是大忌）
                         finalMoveDir = Utils.mult(Utils.normalize(moveDir), -1);
-                    } else if (distToTarget > optimalRange + 100) {
-                        // too far
+                    } else if (distToTarget > optimalRange + 120) {
+                        // 敌人太远：前进进入控制范围
                         finalMoveDir = Utils.normalize(moveDir);
                     } else {
-                        // Strafe
+                        // 理想距离：走位风筝
                         const perp = { x: -moveDir.y, y: moveDir.x };
                         const strafe = Utils.mult(Utils.normalize(perp), (ai.aiStrafeDir || 1) * 0.7);
                         finalMoveDir = strafe;
                     }
                 }
 
-                // 普攻：攻击范围内随机发射（大招蓄力期间禁止普攻）
-                if (ai.attackCooldown <= 0 && distToTarget < stats.curseRange - 50 && (ai.mp || 0) >= stats.curseManaCost && !ai.avadaCharging) {
-                    if (Math.random() < 0.3) { // 30% 概率每帧尝试
-                        handleMagicCurse(ai, target.pos);
-                    }
+                // --- [统筹规划] MP资源管理策略 ---
+                const rightClickCost = 100; // 右键技能通用消耗
+                const hasEnoughForRightClick = (ai.mp || 0) >= rightClickCost;
+                const isLowHp = ai.hp < ai.maxHp * 0.5;
+                const isCriticalHp = ai.hp < ai.maxHp * 0.3;
+                const shouldSaveForRightClick = isLowHp && ai.secondarySkillCooldown <= 0;
+
+                // 计算当前普攻真实消耗 (与玩家一致的递增机制)
+                const rampFactor = Math.min(1, (ai.magicChargeTimer || 0) / stats.curseRampUpTime);
+                const currentCurseCost = stats.curseManaCost + (stats.curseManaMaxCost - stats.curseManaCost) * rampFactor;
+
+                // 动态攻击概率：基于MP占比和资源需求
+                let attackProbability = 0.25; // 基础概率 (从0.3降低)
+                if (mpRatio > 0.8) attackProbability = 0.4;  // 高蓝激进
+                else if (mpRatio < 0.4) attackProbability = 0.12; // 低蓝保守
+
+                // 需要保留资源给右键技能时大幅降低攻击意愿
+                if (shouldSaveForRightClick && !hasEnoughForRightClick) {
+                    attackProbability = 0.05;
                 }
 
-                // 右键技能（保命）：低血量或敌人太近时使用
-                // 检查是否有足够蓝量使用右键技能（三个技能蓝耗都是100）
-                if (ai.secondarySkillCooldown <= 0 && (ai.mp || 0) >= stats.expelliarmusManaCost) {
-                    const shouldProtect =
-                        (ai.hp < ai.maxHp * 0.4) || // 低血量
-                        (distToTarget < 100 && Math.random() < 0.2) || // 敌人太近
-                        (ai.stunTimer > 0 || ai.rootTimer > 0 || ai.silenceTimer > 0); // 被控
+                // 普攻执行：同步magicChargeTimer机制 (与玩家对称)
+                if (ai.attackCooldown <= 0 && distToTarget < stats.curseRange - 50 &&
+                    (ai.mp || 0) >= currentCurseCost && !ai.avadaCharging) {
+                    if (Math.random() < attackProbability) {
+                        ai.magicChargeTimer = (ai.magicChargeTimer || 0) + dt; // [机制对称] 连续攻击时计时器递增
+                        handleMagicCurse(ai, target.pos);
+                    } else {
+                        // 未攻击时计时器递减
+                        ai.magicChargeTimer = Math.max(0, (ai.magicChargeTimer || 0) - dt * 2);
+                    }
+                } else {
+                    // 不满足攻击条件时计时器递减
+                    ai.magicChargeTimer = Math.max(0, (ai.magicChargeTimer || 0) - dt * 2);
+                }
 
-                    if (shouldProtect) {
+                // --- [统筹规划] 右键技能智能决策 ---
+                // 右键技能主要用于应急（被贴身/被控/残血），符合"被近战贴身是大忌"的战术
+                if (ai.secondarySkillCooldown <= 0 && hasEnoughForRightClick && !ai.avadaCharging) {
+                    // 战场态势分析
+                    const isEnemyClose = distToTarget < 180; // 提高阈值：更早意识到危险
+                    const isBeingPressured = isEnemyClose && target.vel && Utils.mag(target.vel) > 1.5;
+                    const isBeingControlled = ai.stunTimer > 0 || ai.rootTimer > 0;
+
+                    // 智能决策：判断是否应该使用右键技能
+                    let shouldUseRightClick = false;
+
+                    if (isCriticalHp && Math.random() < 0.12) {
+                        // 残血时积极寻求保护（三种技能都可能有用）
+                        shouldUseRightClick = true;
+                    } else if (isBeingControlled && Math.random() < 0.2) {
+                        // 被控时尝试使用（移形换影可解控，其他技能也可能有帮助）
+                        shouldUseRightClick = true;
+                    } else if (isEnemyClose && isBeingPressured && Math.random() < 0.15) {
+                        // 被近战贴身时高概率使用（这是大忌，必须逃脱）
+                        shouldUseRightClick = true;
+                    }
+
+                    if (shouldUseRightClick) {
                         handleMagicProtection(ai);
                     }
                 }
