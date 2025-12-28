@@ -215,6 +215,9 @@ export const CHAR_STATS = {
     uiThemeColor: 'slate',
     darkWizardUiThemeColor: 'zinc',
 
+    // 黑化系统
+    darkWizardChance: 0.1,  // 黑化概率 (10%)
+
     // MP System
     maxMp: 200,
     mpRegen: 20,        // MP/秒，匀速恢复
@@ -228,6 +231,8 @@ export const CHAR_STATS = {
     curseSpeed: 13,
 
     // Right Click - Protection Spell (保命咒语)
+    // 概率权重配置 [除你武器, 盔甲护身, 移形换影]
+    protectionSpellWeights: [1, 1, 1],  // 均等概率 (各33.3%)
     // 《除你武器》
     expelliarmusManaCost: 100,
     expelliarmusRange: 80,
@@ -366,7 +371,7 @@ export const CHARGE_CONFIG: Record<string, {
 
 export const DEFAULT_HAZARD_AFFINITY = {
   SKILL: 1,
-  WATER: 0,
+  WATER: 0.5,
   MAGMA: 1,
   WALL: 0,
 };
@@ -386,6 +391,7 @@ export const HAZARD_AFFINITY: Partial<Record<CharacterType, Partial<typeof DEFAU
   },
   [CharacterType.WUKONG]: {
     MAGMA: 0.5,
+    WATER: -0.3,
   }
 };
 

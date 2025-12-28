@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { CharacterType } from '../types';
 import { Sound } from '../sound';
 import { CHARACTER_IMAGES } from '../images';
+import { CHAR_STATS } from '../constants';
 
 // Localization Map
 const ROLE_NAMES: Record<CharacterType, string> = {
@@ -11,6 +12,21 @@ const ROLE_NAMES: Record<CharacterType, string> = {
     [CharacterType.TANK]: '坦克球',
     [CharacterType.COACH]: '教练球',
     [CharacterType.MAGIC]: '魔法球',
+    [CharacterType.ENVIRONMENT]: '环境',
+};
+
+// Theme Color to Tailwind Border Class Mapping
+const getThemeBorderClass = (charType: CharacterType): string => {
+    const themeColor = CHAR_STATS[charType]?.uiThemeColor || 'white';
+    const colorMap: Record<string, string> = {
+        'red': 'border-red-500',
+        'emerald': 'border-emerald-500',
+        'yellow': 'border-yellow-500',
+        'fuchsia': 'border-fuchsia-500',
+        'slate': 'border-slate-400',
+        'zinc': 'border-zinc-400',
+    };
+    return colorMap[themeColor] || 'border-white';
 };
 
 export interface GameConfig {
@@ -147,7 +163,7 @@ const CustomGameSetup: React.FC<Props> = ({ onStart, onBack }) => {
                         <button
                             key={c}
                             onClick={() => handleCharChange(index, c)}
-                            className={`w-10 h-10 rounded-lg border-2 overflow-hidden transition-all flex-shrink-0 ${charType === c ? 'border-white scale-110 shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
+                            className={`w-10 h-10 rounded-lg border-2 overflow-hidden transition-all flex-shrink-0 ${charType === c ? `${getThemeBorderClass(c)} scale-110 shadow-lg` : 'border-transparent opacity-50 hover:opacity-100'}`}
                         >
                             <img src={CHARACTER_IMAGES[c].avatar} alt={c} className="w-full h-full object-cover" />
                         </button>

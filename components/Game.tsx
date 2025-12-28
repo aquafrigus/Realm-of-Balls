@@ -410,19 +410,110 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
         return points;
     };
 
+    // 检测位置是否对角色安全（基于地形亲和度）
+    const isSafeSpawnPosition = (
+        type: CharacterType,
+        pos: Vector2,
+        obstacles: Obstacle[],
+        radius: number
+    ): boolean => {
+        // 获取角色的地形亲和度配置
+        const affinity = { ...DEFAULT_HAZARD_AFFINITY, ...(HAZARD_AFFINITY[type] || {}) };
+
+        // 检查所有障碍物
+        for (const obs of obstacles) {
+            // 检查是否与障碍物重叠
+            const collision = Utils.checkCircleRectCollision(pos, radius, obs);
+            if (!collision.collided) continue;
+
+            // 获取该地形类型的亲和度
+            let hazardAffinity = 0;
+            if (obs.type === 'WATER') hazardAffinity = affinity.WATER || 0;
+            else if (obs.type === 'LAVA') hazardAffinity = affinity.MAGMA || 0;
+            else if (obs.type === 'WALL') hazardAffinity = affinity.WALL || 0;
+
+            // 如果亲和度 > 0，表示危险
+            if (hazardAffinity > 0) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    // 在给定位置附近寻找安全出生点
+    const findSafeSpawnPosition = (
+        type: CharacterType,
+        preferredPos: Vector2,
+        obstacles: Obstacle[],
+        radius: number
+    ): Vector2 => {
+        // 首先检查首选位置是否安全
+        if (isSafeSpawnPosition(type, preferredPos, obstacles, radius)) {
+            return preferredPos;
+        }
+
+        // 使用螺旋搜索算法寻找安全位置
+        const searchRadius = 50;
+        const maxSearchRadius = 300;
+        const angleStep = Math.PI / 6; // 30度步进
+
+        for (let r = searchRadius; r <= maxSearchRadius; r += searchRadius) {
+            const numSteps = Math.floor((2 * Math.PI) / angleStep);
+            for (let i = 0; i < numSteps; i++) {
+                const angle = i * angleStep;
+                const testPos = {
+                    x: preferredPos.x + Math.cos(angle) * r,
+                    y: preferredPos.y + Math.sin(angle) * r
+                };
+
+                // 检查是否在地图范围内
+                if (testPos.x < radius || testPos.x > MAP_SIZE.width - radius ||
+                    testPos.y < radius || testPos.y > MAP_SIZE.height - radius) {
+                    continue;
+                }
+
+                // 检查是否安全
+                if (isSafeSpawnPosition(type, testPos, obstacles, radius)) {
+                    return testPos;
+                }
+            }
+        }
+
+        // 如果未找到安全位置，记录警告并返回原位置
+        console.warn(`[Safe Spawn] Could not find safe spawn position for ${type} near (${preferredPos.x}, ${preferredPos.y})`);
+        return preferredPos;
+    };
+
     // 2. 初始化玩家列表
-    const initPlayers = (): PlayerState[] => {
+    const initPlayers = (obstacles: Obstacle[]): PlayerState[] => {
+        // 获取障碍物用于安全检测
+
         if (customConfig) {
             // 使用自定义配置
             const spawns = getSpawnPoints(customConfig.players.length);
-            return customConfig.players.map((cfg, i) =>
-                createPlayer(cfg.type, spawns[i], cfg.isPlayer ? 'player' : `bot_${i}`, cfg.teamId, cfg.isBot)
-            );
+            return customConfig.players.map((cfg, i) => {
+                // 为每个角色找到安全的出生点
+                const safeSpawn = findSafeSpawnPosition(
+                    cfg.type,
+                    spawns[i],
+                    obstacles,
+                    CHAR_STATS[cfg.type].radius
+                );
+                return createPlayer(cfg.type, safeSpawn, cfg.isPlayer ? 'player' : `bot_${i}`, cfg.teamId, cfg.isBot);
+            });
         } else {
             // 传统的快速开始 (1v1)
             const spawns = getSpawnPoints(2);
+
             // 玩家永远是 team 0
-            const p1 = createPlayer(playerType, spawns[0], 'player', 0, false);
+            const p1Spawn = findSafeSpawnPosition(
+                playerType,
+                spawns[0],
+                obstacles,
+                CHAR_STATS[playerType].radius
+            );
+            const p1 = createPlayer(playerType, p1Spawn, 'player', 0, false);
 
             let eType = enemyType as CharacterType;
             if (enemyType === 'RANDOM' || !enemyType) {
@@ -435,49 +526,40 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
             if (eType === CharacterType.COACH) {
                 enemySpawnPos = { x: MAP_SIZE.width / 2, y: MAP_SIZE.height / 2 };
             }
-            const p2 = createPlayer(eType, enemySpawnPos, 'enemy', 1, true);
+
+            const p2Spawn = findSafeSpawnPosition(
+                eType,
+                enemySpawnPos,
+                obstacles,
+                CHAR_STATS[eType].radius
+            );
+            const p2 = createPlayer(eType, p2Spawn, 'enemy', 1, true);
             return [p1, p2];
         }
     };
 
-    const getRandomEdgePos = () => {
-        const edge = Math.floor(Math.random() * 4);
-        const padding = 200;
-        const w = MAP_SIZE.width;
-        const h = MAP_SIZE.height;
-        // 0: Top, 1: Bottom, 2: Left, 3: Right
-        switch (edge) {
-            case 0: return { x: Math.random() * (w - 2 * padding) + padding, y: padding };
-            case 1: return { x: Math.random() * (w - 2 * padding) + padding, y: h - padding };
-            case 2: return { x: padding, y: Math.random() * (h - 2 * padding) + padding };
-            default: return { x: w - padding, y: Math.random() * (h - 2 * padding) + padding };
-        }
-    };
-
-    const spawnPlayer = getRandomEdgePos();
-    // Ensure enemy spawns reasonably far away
-    let spawnEnemy = getRandomEdgePos();
-    let attempts = 0;
-    while (Utils.dist(spawnPlayer, spawnEnemy) < 800 && attempts < 10) {
-        spawnEnemy = getRandomEdgePos();
-        attempts++;
-    }
+    // Game State Initialization
+    const [initialState] = useState<GameState>(() => {
+        const obstacles = generateObstacles();
+        const players = initPlayers(obstacles);
+        return {
+            players,
+            obstacles,
+            projectiles: [],
+            particles: [],
+            groundEffects: [],
+            drones: [],
+            lightSpirits: [],
+            floatingTexts: [],
+            camera: { x: 0, y: 0 },
+            gameStatus: 'PLAYING',
+            timeScale: 1.0,
+            imageCache: {}
+        };
+    });
 
     // Game State Ref
-    const stateRef = useRef<GameState>({
-        players: initPlayers(),
-        projectiles: [],
-        particles: [],
-        groundEffects: [],
-        drones: [],
-        lightSpirits: [],
-        obstacles: generateObstacles(),
-        floatingTexts: [],
-        camera: { x: 0, y: 0 },
-        gameStatus: 'PLAYING',
-        timeScale: 1.0,
-        imageCache: {}
-    });
+    const stateRef = useRef<GameState>(initialState);
 
     // 获取本地玩家（用于输入控制、UI显示）
     const getHumanPlayer = () => {
@@ -802,7 +884,7 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         // 1. 先确定形态（如果是魔法球）
         const magicForm = type === CharacterType.MAGIC
-            ? (Math.random() < 0.1 ? 'BLACK' : 'WHITE') // 魔法球黑化概率
+            ? (Math.random() < stats.darkWizardChance ? 'BLACK' : 'WHITE') // 魔法球黑化概率
             : undefined;
         // 2. 根据形态选择颜色和主题色
         let color = stats.color;
@@ -1848,8 +1930,19 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
 
         const stats = CHAR_STATS[CharacterType.MAGIC];
 
-        // Roll random spell first (0: Expelliarmus, 1: Armor, 2: Blink)
-        const spell = Math.floor(Math.random() * 3);
+        // 基于权重随机选择保护咒语 (0: Expelliarmus, 1: Armor, 2: Blink)
+        const weights = (stats as any).protectionSpellWeights || [1, 1, 1];
+        const totalWeight = weights.reduce((sum: number, w: number) => sum + w, 0);
+        const rand = Math.random() * totalWeight;
+        let spell = 0;
+        let cumulative = 0;
+        for (let i = 0; i < weights.length; i++) {
+            cumulative += weights[i];
+            if (rand < cumulative) {
+                spell = i;
+                break;
+            }
+        }
 
         if (spell === 0) {
             // 《除你武器》
@@ -4678,10 +4771,13 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // 移动策略：保持在射程边缘（风筝战术）
                 // curseRange = 450，保持在 380 左右可以安全控制敌人
                 const optimalRange = 380 + (ai.aiPreferredDistOffset || 0);
+                const isUnderPressure = distToTarget < 200; // 200 像素内视为"压力状态"
                 if (!evasionDir) {
-                    if (distToTarget < optimalRange - 80) {
-                        // 敌人太近：后退拉开距离（被近战贴身是大忌）
-                        finalMoveDir = Utils.mult(Utils.normalize(moveDir), -1);
+                    if (distToTarget < optimalRange - 30) {
+                        // 敌人太近：后退拉开距离（阈值从 300 提升到 350）
+                        // 若被严重近身，使用更强力的后退意图
+                        const retreatUrgency = isUnderPressure ? 1.5 : 1.0;
+                        finalMoveDir = Utils.mult(Utils.normalize(moveDir), -retreatUrgency);
                     } else if (distToTarget > optimalRange + 120) {
                         // 敌人太远：前进进入控制范围
                         finalMoveDir = Utils.normalize(moveDir);
@@ -4733,9 +4829,17 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                 // 右键技能主要用于应急（被贴身/被控/残血），符合"被近战贴身是大忌"的战术
                 if (ai.secondarySkillCooldown <= 0 && hasEnoughForRightClick && !ai.avadaCharging) {
                     // 战场态势分析
-                    const isEnemyClose = distToTarget < 180; // 提高阈值：更早意识到危险
+                    const isEnemyClose = distToTarget < 220; // 提高阈值：更早意识到危险
                     const isBeingPressured = isEnemyClose && target.vel && Utils.mag(target.vel) > 1.5;
                     const isBeingControlled = ai.stunTimer > 0 || ai.rootTimer > 0;
+                    // [New] 检测是否被逼入墙角（地形感知）
+                    const isNearWall = stateRef.current.obstacles.some(obs => {
+                        if (obs.type !== 'WALL') return false;
+                        const cx = obs.x + obs.width / 2;
+                        const cy = obs.y + obs.height / 2;
+                        return Utils.dist(ai.pos, { x: cx, y: cy }) < Math.max(obs.width, obs.height) / 2 + 80;
+                    });
+                    const isCornered = isEnemyClose && isNearWall;
 
                     // 智能决策：判断是否应该使用右键技能
                     let shouldUseRightClick = false;
@@ -4746,8 +4850,11 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     } else if (isBeingControlled && Math.random() < 0.2) {
                         // 被控时尝试使用（移形换影可解控，其他技能也可能有帮助）
                         shouldUseRightClick = true;
-                    } else if (isEnemyClose && isBeingPressured && Math.random() < 0.15) {
-                        // 被近战贴身时高概率使用（这是大忌，必须逃脱）
+                    } else if (isCornered && Math.random() < 0.35) {
+                        // 被逼入墙角时高概率逃脱
+                        shouldUseRightClick = true;
+                    } else if (isEnemyClose && isBeingPressured && Math.random() < 0.25) {
+                        // 被近战贴身时提高概率使用（15% -> 25%）
                         shouldUseRightClick = true;
                     }
 
@@ -4798,6 +4905,26 @@ const Game: React.FC<GameProps> = ({ playerType, enemyType, customConfig, onExit
                     if (shouldUlt) {
                         handleMagicUltimate(ai, dt);
                     }
+                }
+
+                // [New] 魔法球近身紧急脱离
+                if (distToTarget < 150 && (ai.aiTacticalRetreatTimer || 0) <= 0) {
+                    // 计算最佳脱离方向：远离敌人，同时避开障碍物
+                    let retreatAngle = Math.atan2(ai.pos.y - target.pos.y, ai.pos.x - target.pos.x);
+
+                    // 地形检测：如果正后方有障碍物，选择侧向逃跑
+                    const backPos = Utils.add(ai.pos, { x: Math.cos(retreatAngle) * 100, y: Math.sin(retreatAngle) * 100 });
+                    const isBackBlocked = stateRef.current.obstacles.some(obs =>
+                        obs.type === 'WALL' && Utils.checkCircleRectCollision(backPos, ai.radius + 10, obs).collided
+                    );
+
+                    if (isBackBlocked) {
+                        // 选择左或右侧逃跑
+                        retreatAngle += Math.random() > 0.5 ? Math.PI / 2 : -Math.PI / 2;
+                    }
+
+                    ai.aiTacticalRetreatDir = { x: Math.cos(retreatAngle), y: Math.sin(retreatAngle) };
+                    ai.aiTacticalRetreatTimer = 0.4; // 0.4 秒强制后退
                 }
             }
         }
